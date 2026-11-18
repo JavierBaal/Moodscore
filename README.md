@@ -4,7 +4,7 @@
 
 Tell it how the scene should feel. It moves the sound there.
 
-> **Status: early design.** Nothing runs yet. This repository currently holds the concept, the architecture and the planned MCP API. Star or watch it to follow progress, or open an issue if you want to help shape it.
+> **Status: Phase 0.** The DSP pipeline works: a single drone voice, written in Faust, compiled to Rust, rendered to a WAV file. The live engine and the MCP server are next. Star or watch the repo to follow progress, or open an issue to help shape it.
 
 ---
 
@@ -89,6 +89,19 @@ Inspired by the tradition of analog drone machines and early electronic instrume
 | MCP | [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK |
 
 Moodscore will run as a standalone desktop app on Windows, macOS and Linux. Any MCP client can drive it; it is not tied to a single AI vendor.
+
+## Quick start
+
+You need [Rust](https://rustup.rs) (stable). [Faust](https://github.com/grame-cncm/faust/releases) is optional: without it the build uses the pre-generated DSP code.
+
+```sh
+git clone https://github.com/JavierBaal/Moodscore.git
+cd Moodscore
+cargo run --release -p moodscore -- params              # list the DSP parameters
+cargo run --release -p moodscore -- render drone.wav 30  # 30 s drone that slowly darkens
+```
+
+Open `drone.wav` and listen: a low, slightly unstable drone whose filter closes over thirty seconds. It's the first, hard-coded answer to *"get darker, slowly"*.
 
 ## Documentation
 

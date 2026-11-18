@@ -22,6 +22,13 @@ All code, comments, docs, commit messages and issues are in English.
 4. **The DSP crate knows nothing about moods or MCP.** Keep layers separate: dsp ← engine ← director ← mcp.
 5. Keep the MCP API in `docs/MCP_TOOLS.md` in sync with the implementation.
 
+## Commands
+
+- `cargo test --all`
+- `cargo run --release -p moodscore -- params`
+- `cargo run --release -p moodscore -- render out.wav 30`
+- After editing `dsp/`: rebuild with `MOODSCORE_UPDATE_GENERATED=1` and commit `crates/moodscore-dsp/generated/moodscore_dsp.rs` (needs Faust ≥ 2.88; see CONTRIBUTING.md).
+
 ## Conventions
 
 - `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test` must pass.

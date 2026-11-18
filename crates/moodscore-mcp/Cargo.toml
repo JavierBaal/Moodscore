@@ -1,0 +1,10 @@
+[package]
+name = "moodscore-mcp"
+description = "Moodscore MCP server: the tools an AI agent uses to play Moodscore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

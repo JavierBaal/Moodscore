@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/moodscore-dsp",
+    "crates/moodscore-engine",
+    "crates/moodscore-director",
+    "crates/moodscore-mcp",
+    "crates/moodscore",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/JavierBaal/Moodscore"
+rust-version = "1.92"
+
+[workspace.dependencies]
+moodscore-dsp = { path = "crates/moodscore-dsp" }
+moodscore-engine = { path = "crates/moodscore-engine" }
+moodscore-director = { path = "crates/moodscore-director" }
+moodscore-mcp = { path = "crates/moodscore-mcp" }
+hound = "3.5"
+
+[profile.dev]
+# DSP code is unusable unoptimised; keep debug builds fast enough to listen to.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

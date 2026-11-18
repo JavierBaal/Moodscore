@@ -2,9 +2,6 @@
 /target/
 **/*.rs.bk
 
-# Generated Faust code
-/crates/moodscore-dsp/src/generated/
-
 # Audio renders and local scenes
 /renders/
 *.wav

@@ -2,11 +2,13 @@
 
 Each phase ends with something you can hear. Order may change; scope will.
 
-## Phase 0: Skeleton
+## Phase 0: Skeleton ✅
 
-- Cargo workspace and crate layout
-- Faust → Rust build pipeline working on Windows, macOS and Linux
-- CI: build and test on all three platforms
+- [x] Cargo workspace and crate layout
+- [x] Faust → Rust build pipeline, with pre-generated fallback when Faust is not installed
+- [x] First drone voice (detuned saws + sub, analog drift, ladder filter, stereo reverb)
+- [x] `moodscore render` to check the sound end to end
+- [x] CI: fmt, clippy, tests and a render smoke test on Windows, macOS and Linux
 
 ## Phase 1: Proof of concept
 

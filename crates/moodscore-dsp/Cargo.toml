@@ -1,0 +1,11 @@
+[package]
+name = "moodscore-dsp"
+description = "Moodscore sound engine DSP, written in Faust and compiled to Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]

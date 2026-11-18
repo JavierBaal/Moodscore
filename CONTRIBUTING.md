@@ -23,10 +23,31 @@ Open an issue first for anything larger than a small fix, so we agree on the app
 
 ## Development setup
 
-Will be documented once Phase 0 lands. Expect:
+- **Rust** (stable, latest) via [rustup](https://rustup.rs).
+- **Faust** ([releases](https://github.com/grame-cncm/faust/releases), 2.88 or newer) on your `PATH`, only if you change the DSP.
 
-- Rust (stable, latest)
-- The [Faust compiler](https://github.com/grame-cncm/faust/releases) on your `PATH`
+```sh
+cargo test --all
+cargo run --release -p moodscore -- render drone.wav 30
+```
+
+### Working on the DSP
+
+The sound lives in `dsp/moodscore.dsp`. On build, `crates/moodscore-dsp/build.rs` compiles it with Faust if it can find it (on `PATH`, or via the `FAUST` environment variable). Without Faust it falls back to the pre-generated code in `crates/moodscore-dsp/generated/`, so everyone else can build without installing Faust.
+
+When you change the DSP, regenerate that file and commit it with your change:
+
+```sh
+# macOS / Linux
+MOODSCORE_UPDATE_GENERATED=1 cargo build -p moodscore-dsp
+```
+
+```powershell
+# Windows PowerShell
+$env:MOODSCORE_UPDATE_GENERATED=1; cargo build -p moodscore-dsp; Remove-Item Env:MOODSCORE_UPDATE_GENERATED
+```
+
+The DSP crate only exposes raw synthesis parameters. Moods, gestures and smoothing over time belong to the director and engine.
 
 ## License
 
