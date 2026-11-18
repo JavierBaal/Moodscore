@@ -1,0 +1,116 @@
+# Architecture
+
+> Draft. This describes the intended design; it will change as the prototype teaches us things.
+
+## Design goal
+
+An AI agent should be able to perform a drone piece live, even though every decision it makes takes seconds. The architecture solves this by splitting **intent** (slow, from the agent) from **execution** (fast, in the engine).
+
+## Components
+
+```
+┌──────────────┐   stdio / HTTP    ┌────────────────────────────────────────────┐
+│  MCP client  │ ◄───────────────► │ moodscore-mcp                              │
+└──────────────┘                   │   tool handlers, validation, state reports │
+                                   └───────────────┬────────────────────────────┘
+                                                   │ commands (lock-free queue)
+                                   ┌───────────────▼────────────────────────────┐
+                                   │ moodscore-director        (control thread) │
+                                   │   mood macros → parameter targets          │
+                                   │   gesture scheduler (trajectories, curves) │
+                                   │   scene store                              │
+                                   └───────────────┬────────────────────────────┘
+                                                   │ parameter frames (lock-free)
+                                   ┌───────────────▼────────────────────────────┐
+                                   │ moodscore-engine            (audio thread) │
+                                   │   per-block smoothing                      │
+                                   │   moodscore-dsp (Faust → Rust)             │
+                                   │   output analysis taps → listen            │
+                                   └───────────────┬────────────────────────────┘
+                                                   ▼
+                                                 cpal
+```
+
+### moodscore-dsp
+
+The sound itself, written in Faust (`dsp/*.dsp`) and compiled to Rust at build time. It exposes a flat set of named parameters (cutoffs, levels, detune amounts, effect sends…). It knows nothing about moods, gestures or agents.
+
+Faust is used because its standard libraries already provide virtual-analog filters, saturation, oscillators and reverbs, and because Faust code is compact enough to iterate on quickly.
+
+Build integration: `faust-build` exists but has not been updated since 2024. If it falls behind the Faust compiler, a small custom `build.rs` that calls `faust -lang rust` directly is the fallback.
+
+### moodscore-engine
+
+Owns the audio callback. Each block it:
+
+1. Drains incoming parameter frames.
+2. Smooths every parameter toward its target (no zipper noise, ever).
+3. Runs the DSP.
+4. Feeds lightweight analysis (RMS, spectral centroid, spectral flux) into a lock-free buffer for `listen`.
+
+### moodscore-director
+
+Where musical intent becomes motion.
+
+- **Mood macros.** Six expressive dimensions, each in `0.0–1.0`:
+  `tension`, `darkness`, `density`, `motion`, `distance`, `instability`.
+  Each macro maps to many DSP parameters through curves defined in data, not code, so they can be tuned by ear without recompiling.
+- **Gestures.** A gesture is a trajectory: a target, a duration, a curve and an optional start offset. Gestures on different parameters run concurrently. A new gesture on a parameter that is already moving starts from wherever that parameter is right now, so changes of mind never cause jumps.
+- **Scenes.** Named snapshots of the macro state and selected raw parameters, stored as JSON.
+
+Runs on a control thread at a fixed control rate (about 1 kHz) and sends parameter frames to the engine.
+
+### moodscore-mcp
+
+The MCP server, built on `rmcp`. It validates tool calls, turns them into director commands and reports state back. See [MCP_TOOLS.md](MCP_TOOLS.md).
+
+### moodscore (binary)
+
+Wires everything together: device selection, config, logging, and later a minimal GUI showing the macros moving so the human can watch, and intervene in, what the agent is doing.
+
+## Planned crate layout
+
+```
+moodscore/
+├── Cargo.toml              # workspace
+├── dsp/                    # Faust sources
+│   └── moodscore.dsp
+├── crates/
+│   ├── moodscore-dsp/      # build.rs compiles dsp/ to Rust
+│   ├── moodscore-engine/
+│   ├── moodscore-director/
+│   ├── moodscore-mcp/
+│   └── moodscore/          # binary
+├── scenes/                 # factory scenes (JSON)
+├── macros/                 # macro → parameter mappings (JSON/TOML)
+└── docs/
+```
+
+## Real-time rules
+
+The audio thread must never:
+
+- allocate or free memory
+- take a lock
+- do I/O (files, network, logging)
+- wait on another thread
+
+All communication with the audio thread goes through preallocated lock-free queues (`ringbuf` or equivalent). These rules are not negotiable; a drone engine that clicks is useless.
+
+## The latency model
+
+| What | Timescale |
+|---|---|
+| Agent decides and calls a tool | 1–10 s |
+| Director schedules a gesture | < 1 ms |
+| Parameter reaches the audio thread | 1 audio block |
+| Gesture plays out | seconds to minutes |
+
+Because gestures are long compared with the agent's thinking time, the agent is always *ahead* of the sound, never chasing it. That is the whole point.
+
+## Open questions
+
+- Fixed DSP graph vs. switchable voice types per slot.
+- How much the human can override the agent in real time, and how the agent learns about it (likely: the director records human changes and `get_state` reports them).
+- Faust static compilation only, or optional JIT hot-reload (LLVM) for live DSP editing later.
+- Plugin builds (VST3/CLAP via a Rust plugin framework) in addition to the standalone app.
