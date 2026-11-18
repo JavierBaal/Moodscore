@@ -93,7 +93,7 @@ Moodscore will run as a standalone desktop app on Windows, macOS and Linux. Any 
 
 ## Quick start
 
-You need [Rust](https://rustup.rs) 1.88 or newer. [Faust](https://github.com/grame-cncm/faust/releases) is optional: without it the build uses the pre-generated DSP code.
+You need [Rust](https://rustup.rs) 1.89 or newer. [Faust](https://github.com/grame-cncm/faust/releases) is optional: without it the build uses the pre-generated DSP code.
 
 ```sh
 git clone https://github.com/JavierBaal/Moodscore.git

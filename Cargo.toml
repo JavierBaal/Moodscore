@@ -13,7 +13,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/JavierBaal/Moodscore"
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.dependencies]
 moodscore-dsp = { path = "crates/moodscore-dsp" }
