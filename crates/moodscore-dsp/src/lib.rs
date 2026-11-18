@@ -129,7 +129,14 @@ fn allocate() -> Box<MoodscoreDsp> {
     // `i32` and `f32` fields and fixed-size arrays of them, for which the
     // all-zero bit pattern is a valid value. `MoodscoreDsp::new()` itself
     // initialises every field to zero; `init()` is called right after.
-    unsafe { Box::<MoodscoreDsp>::new_zeroed().assume_init() }
+    unsafe {
+        let layout = std::alloc::Layout::new::<MoodscoreDsp>();
+        let ptr = std::alloc::alloc_zeroed(layout) as *mut MoodscoreDsp;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Box::from_raw(ptr)
+    }
 }
 
 /// Collects parameter descriptions from the generated UI description.
