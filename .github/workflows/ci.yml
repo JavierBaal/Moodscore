@@ -25,6 +25,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: ALSA headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       # CI builds from the pre-generated DSP code in
       # crates/moodscore-dsp/generated/, so Faust is not installed here.
       - name: Format
@@ -39,12 +43,17 @@ jobs:
       - name: Render smoke test
         run: cargo run --release -p moodscore -- render ci-render.wav 3
 
+      - name: MCP smoke test
+        if: runner.os == 'Linux'
+        run: python3 scripts/mcp_smoke_test.py target/release/moodscore
+
   msrv:
-    name: MSRV (Rust 1.85)
+    name: MSRV (Rust 1.88)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Test
         run: cargo test --all

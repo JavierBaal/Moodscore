@@ -1,6 +1,6 @@
 [package]
 name = "moodscore-engine"
-description = "Moodscore audio engine: real-time audio thread, parameter smoothing, output analysis"
+description = "Moodscore audio engine: real-time audio thread, parameter smoothing, level metering"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,5 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+moodscore-dsp.workspace = true
+cpal.workspace = true

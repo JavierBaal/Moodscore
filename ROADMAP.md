@@ -10,16 +10,18 @@ Each phase ends with something you can hear. Order may change; scope will.
 - [x] `moodscore render` to check the sound end to end
 - [x] CI: fmt, clippy, tests and a render smoke test on Windows, macOS and Linux
 
-## Phase 1: Proof of concept
+## Phase 1: Proof of concept ✅ (built; waiting on listening tests)
 
 The milestone that decides whether the idea works:
 
 > Tell the agent *"get darker, slowly"*, and it sounds right.
 
-- One drone voice, one virtual-analog filter, one reverb
-- Engine with parameter smoothing and real-time-safe audio thread
-- Gesture director (trajectories, curves, interruption without jumps)
-- MCP server with three tools: `morph` (one macro: `darkness`), `gesture`, `get_state`
+- [x] One drone voice, one virtual-analog filter, one reverb
+- [x] Engine with parameter smoothing, fade-in, level meters and a real-time-safe audio thread (cpal)
+- [x] Gesture director: trajectories, six curves, delayed starts, interruption without jumps, macro/manual ownership
+- [x] `darkness` macro mapped from data (`macros/default.json`)
+- [x] MCP server over stdio with three tools: `morph`, `gesture`, `get_state`
+- [x] `play` (live demo), `render` (offline, same path as live), `serve --no-audio` and an MCP smoke test in CI
 
 ## Phase 2: The instrument
 

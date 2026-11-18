@@ -4,7 +4,7 @@
 
 Tell it how the scene should feel. It moves the sound there.
 
-> **Status: Phase 0.** The DSP pipeline works: a single drone voice, written in Faust, compiled to Rust, rendered to a WAV file. The live engine and the MCP server are next. Star or watch the repo to follow progress, or open an issue to help shape it.
+> **Status: Phase 1.** You can play it live from Claude (or any MCP client): one drone voice, one mood macro (`darkness`), smooth gestures with no clicks or jumps. More voices and macros come in Phase 2. Star or watch the repo to follow progress, or open an issue to help shape it.
 
 ---
 
@@ -87,21 +87,58 @@ Inspired by the tradition of analog drone machines and early electronic instrume
 | Engine, director, server | Rust |
 | Audio I/O | [cpal](https://github.com/RustAudio/cpal) (WASAPI/ASIO, CoreAudio, ALSA/JACK) |
 | MCP | [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK |
+| Mood mappings | JSON (`macros/default.json`), tunable without recompiling |
 
 Moodscore will run as a standalone desktop app on Windows, macOS and Linux. Any MCP client can drive it; it is not tied to a single AI vendor.
 
 ## Quick start
 
-You need [Rust](https://rustup.rs) (stable). [Faust](https://github.com/grame-cncm/faust/releases) is optional: without it the build uses the pre-generated DSP code.
+You need [Rust](https://rustup.rs) 1.88 or newer. [Faust](https://github.com/grame-cncm/faust/releases) is optional: without it the build uses the pre-generated DSP code.
 
 ```sh
 git clone https://github.com/JavierBaal/Moodscore.git
 cd Moodscore
-cargo run --release -p moodscore -- params              # list the DSP parameters
-cargo run --release -p moodscore -- render drone.wav 30  # 30 s drone that slowly darkens
+cargo build --release
 ```
 
-Open `drone.wav` and listen: a low, slightly unstable drone whose filter closes over thirty seconds. It's the first, hard-coded answer to *"get darker, slowly"*.
+Check that sound comes out of your speakers:
+
+```sh
+cargo run --release -- play
+```
+
+A forty-second demo: the drone slowly darkens, then opens up again. Turn your volume down first; it fades in, but drones carry a lot of low end.
+
+Other commands: `render drone.wav 30` writes the same demo to a file; `params` lists the sound parameters.
+
+## Play it with Claude
+
+Moodscore is an MCP server. The client starts it, and it plays through your default audio device for as long as the client is connected.
+
+**Claude Code**
+
+```sh
+claude mcp add moodscore -- /path/to/Moodscore/target/release/moodscore serve
+```
+
+**Claude Desktop**: add this to `claude_desktop_config.json` (Settings → Developer → Edit Config), then restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "moodscore": {
+      "command": "/path/to/Moodscore/target/release/moodscore",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+On Windows the command is the full path to `moodscore.exe`, with doubled backslashes in JSON, e.g. `"H:\\Music\\Moodscore\\target\\release\\moodscore.exe"`.
+
+Then talk to it: *"Start something low and calm. Now let it get darker, slowly, over the next minute."*
+
+To retune the mood macros by ear, copy `macros/default.json`, edit it, and pass `--macros your-file.json` to `serve` or `play`.
 
 ## Documentation
 

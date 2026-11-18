@@ -1,6 +1,6 @@
 [package]
 name = "moodscore-director"
-description = "Moodscore gesture director: mood macros, trajectories and scenes"
+description = "Moodscore gesture director: mood macros, trajectories and the control loop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+moodscore-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+moodscore-dsp.workspace = true

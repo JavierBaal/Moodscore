@@ -1,6 +1,6 @@
 # MCP tools (draft)
 
-> Draft API. Names and shapes will change during the prototype. Feedback welcome in issues.
+> Tools marked **✅ Phase 1** are implemented; the rest are the plan. Names and shapes may still change. Feedback welcome in issues.
 
 These are the tools an agent uses to play Moodscore. They are designed around one rule: **the agent describes where the sound should go and how long it should take to get there; the engine does the moving.**
 
@@ -9,13 +9,15 @@ These are the tools an agent uses to play Moodscore. They are designed around on
 - Macros and most parameters are normalized to `0.0–1.0`.
 - Durations are in seconds (`over`). `0` means "as fast as is musically safe" (a short smoothing time, never a hard jump).
 - Curves: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `exponential`, `logarithmic`.
+- `over` defaults to 10 seconds; `curve` defaults to `ease_in_out`.
 - Every call returns the resulting state, so the agent never has to guess.
+- Invalid calls (unknown names, values out of range) return a tool error explaining what was wrong; nothing changes.
 
 ## Mood
 
-### `morph`
+### `morph` ✅ Phase 1
 
-Move one or more mood macros toward new values.
+Move one or more mood macros toward new values. Parameters a macro drives come back under its control, gliding from wherever they are over the same duration.
 
 ```json
 {
@@ -26,7 +28,7 @@ Move one or more mood macros toward new values.
 }
 ```
 
-Macros: `tension`, `darkness`, `density`, `motion`, `distance`, `instability`. Omitted macros keep moving (or stay) as they were.
+Macros: `darkness` (Phase 1); `tension`, `density`, `motion`, `distance`, `instability` (Phase 2). Omitted macros keep moving (or stay) as they were.
 
 ### `set_scene`
 
@@ -42,9 +44,9 @@ Snapshot the current state under a name, and list available scenes with short de
 
 ## Fine control
 
-### `gesture`
+### `gesture` ✅ Phase 1
 
-Move a single raw parameter along a trajectory. For when a macro is too coarse.
+Move a single raw parameter along a trajectory. For when a macro is too coarse. The parameter leaves macro control until the next `morph` of its macro.
 
 ```json
 {
@@ -78,9 +80,9 @@ Fade the whole piece out over a given time. A spoken "stop" from the user should
 
 ## Awareness
 
-### `get_state`
+### `get_state` ✅ Phase 1
 
-Current macros, active gestures (with time remaining), voice states, and any changes the human made by hand since the last call.
+Every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). Voice states and changes the human made by hand arrive in later phases.
 
 ### `listen`
 

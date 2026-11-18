@@ -1,0 +1,16 @@
+{
+  "$comment": "Mood macro mappings. Each macro (0..1) drives several DSP parameters. Edit and restart to retune by ear; no recompiling needed. curve: 'linear' or 'exp' (equal steps in ratio, for frequencies).",
+  "macros": {
+    "darkness": {
+      "description": "How dark and heavy the sound is. 0 = open and airy, 1 = closed, low and murky.",
+      "default": 0.4,
+      "targets": [
+        { "param": "filter/cutoff",    "from": 4200, "to": 140,  "curve": "exp" },
+        { "param": "filter/resonance", "from": 0.22, "to": 0.5 },
+        { "param": "drone_1/sub",      "from": 0.35, "to": 0.85 },
+        { "param": "drone_1/level",    "from": 0.65, "to": 0.8 },
+        { "param": "space/reverb_mix", "from": 0.3,  "to": 0.5 }
+      ]
+    }
+  }
+}

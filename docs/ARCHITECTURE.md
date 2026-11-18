@@ -41,12 +41,14 @@ Build integration: a small `build.rs` calls `faust -lang rust` directly (the `fa
 
 ### moodscore-engine
 
-Owns the audio callback. Each block it:
+Owns the audio callback. Targets cross from the control thread as one atomic per parameter (last value wins, which is exactly right for targets). Every 32 frames the audio thread:
 
-1. Drains incoming parameter frames.
-2. Smooths every parameter toward its target (no zipper noise, ever).
+1. Reads the targets.
+2. Smooths every parameter toward its target (30 ms time constant; in the log domain for frequencies), so no change reaches the DSP as a step.
 3. Runs the DSP.
-4. Feeds lightweight analysis (RMS, spectral centroid, spectral flux) into a lock-free buffer for `listen`.
+4. Updates the level meters (peak, 300 ms RMS) for `get_state`. Richer analysis for `listen` comes in Phase 3.
+
+A 1.5 s fade-in avoids a thump when the engine starts.
 
 ### moodscore-director
 
@@ -58,7 +60,9 @@ Where musical intent becomes motion.
 - **Gestures.** A gesture is a trajectory: a target, a duration, a curve and an optional start offset. Gestures on different parameters run concurrently. A new gesture on a parameter that is already moving starts from wherever that parameter is right now, so changes of mind never cause jumps.
 - **Scenes.** Named snapshots of the macro state and selected raw parameters, stored as JSON.
 
-Runs on a control thread at a fixed control rate (about 1 kHz) and sends parameter frames to the engine.
+Runs on a control thread at 500 Hz and writes parameter targets to the engine.
+
+Ownership: every parameter is driven by either one macro or manual control. `gesture` takes a parameter into manual control starting from its current value; a `morph` of its macro takes it back, blending from the manual value to the macro's value over the morph's duration.
 
 ### moodscore-mcp
 
