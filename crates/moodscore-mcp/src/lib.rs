@@ -1,8 +1,8 @@
 //! Moodscore MCP server.
 //!
 //! The tools an AI agent uses to play Moodscore, as described in
-//! `docs/MCP_TOOLS.md`. Phase 1 exposes `morph` (the `darkness` macro),
-//! `gesture` and `get_state`.
+//! `docs/MCP_TOOLS.md`: `start` and `release` (the transport), `morph`
+//! (the `darkness` macro), `gesture` and `get_state`.
 //!
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
@@ -21,6 +21,9 @@ The person describes how the scene should feel; you translate that into slow, \
 musical movement.
 
 How to play it:
+- Moodscore starts silent. Call `start` when the person wants to hear it, and \
+`release` when they ask you to stop, go quiet or end. Both fade; nothing about \
+the sound is lost, so `start` brings it back as it was.
 - Think in trajectories, not values. Every change glides from where the sound \
 is now to where you send it, over the time you choose. Drones live on slow \
 change: 10 to 60 seconds is normal, 2 to 5 seconds is dramatic, under 1 second \
@@ -93,7 +96,30 @@ pub struct GestureArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetStateArgs {}
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StartArgs {
+    /// Seconds to fade in. Default 3.
+    pub over: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReleaseArgs {
+    /// Seconds to fade out to silence. Default 8. Use 1 or less only for an urgent stop.
+    pub over: Option<f32>,
+}
+
 const DEFAULT_OVER: f32 = 10.0;
+const DEFAULT_START: f32 = 3.0;
+const DEFAULT_RELEASE: f32 = 8.0;
+const MAX_FADE: f32 = 600.0;
+
+fn check_fade(over: f32) -> Result<f32, String> {
+    if over.is_finite() && (0.0..=MAX_FADE).contains(&over) {
+        Ok(over)
+    } else {
+        Err(format!("'over' must be between 0 and {MAX_FADE} seconds"))
+    }
+}
 
 /// The MCP server: a thin, validating layer over the conductor.
 #[derive(Clone)]
@@ -112,6 +138,10 @@ struct Report {
 
 #[derive(Serialize)]
 struct Output {
+    /// True while sounding or fading in; false when released or fading out.
+    playing: bool,
+    /// Current output gain, 0 (silent) to 1.
+    gain: f32,
     rms_dbfs: f32,
     peak_dbfs: f32,
     sample_rate: u32,
@@ -128,10 +158,13 @@ impl MoodscoreServer {
 
     fn report(&self) -> String {
         let levels = self.conductor.engine().levels();
+        let (gain, gain_target) = self.conductor.engine().output_gain();
         let round1 = |x: f32| (x * 10.0).round() / 10.0;
         let report = Report {
             seconds_since_start: (self.conductor.now() * 10.0).round() / 10.0,
             output: Output {
+                playing: gain_target > 0.0,
+                gain: (gain * 1000.0).round() / 1000.0,
                 rms_dbfs: round1(levels.rms_dbfs()),
                 peak_dbfs: round1(levels.peak_dbfs()),
                 sample_rate: self.conductor.engine().sample_rate(),
@@ -139,6 +172,24 @@ impl MoodscoreServer {
             state: self.conductor.state(),
         };
         serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+
+    #[tool(
+        description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the new state."
+    )]
+    fn start(&self, Parameters(args): Parameters<StartArgs>) -> Result<String, String> {
+        let over = check_fade(args.over.unwrap_or(DEFAULT_START))?;
+        self.conductor.engine().fade_to(1.0, over);
+        Ok(self.report())
+    }
+
+    #[tool(
+        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. Returns the new state."
+    )]
+    fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
+        let over = check_fade(args.over.unwrap_or(DEFAULT_RELEASE))?;
+        self.conductor.engine().fade_to(0.0, over);
+        Ok(self.report())
     }
 
     #[tool(
@@ -171,7 +222,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "See what Moodscore is doing: every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
+        description = "See what Moodscore is doing: whether it is playing, every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
     )]
     fn get_state(&self, Parameters(_): Parameters<GetStateArgs>) -> String {
         self.report()

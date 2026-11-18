@@ -13,6 +13,30 @@ These are the tools an agent uses to play Moodscore. They are designed around on
 - Every call returns the resulting state, so the agent never has to guess.
 - Invalid calls (unknown names, values out of range) return a tool error explaining what was wrong; nothing changes.
 
+## Transport
+
+Moodscore starts silent when an MCP client launches it. Nothing sounds until the agent calls `start`.
+
+### `start` ✅
+
+Fade in from silence. After a `release`, brings the sound back exactly as it was.
+
+```json
+{ "over": 3 }
+```
+
+`over` defaults to 3 seconds.
+
+### `release` ✅
+
+Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should map here. The instrument keeps its state; `start` brings it back.
+
+```json
+{ "over": 12 }
+```
+
+`over` defaults to 8 seconds.
+
 ## Mood
 
 ### `morph` ✅ Phase 1
@@ -69,14 +93,6 @@ Bring a voice in or out, or retune it.
 ### `hold`
 
 Freeze everything at its current position (cancel pending gestures without jumping).
-
-### `release`
-
-Fade the whole piece out over a given time. A spoken "stop" from the user should map here, not to silence.
-
-```json
-{ "over": 12 }
-```
 
 ## Awareness
 

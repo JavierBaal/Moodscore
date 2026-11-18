@@ -20,7 +20,7 @@ The milestone that decides whether the idea works:
 - [x] Engine with parameter smoothing, fade-in, level meters and a real-time-safe audio thread (cpal)
 - [x] Gesture director: trajectories, six curves, delayed starts, interruption without jumps, macro/manual ownership
 - [x] `darkness` macro mapped from data (`macros/default.json`)
-- [x] MCP server over stdio with three tools: `morph`, `gesture`, `get_state`
+- [x] MCP server over stdio with `start`, `release`, `morph`, `gesture`, `get_state`; silent until `start`
 - [x] `play` (live demo), `render` (offline, same path as live), `serve --no-audio` and an MCP smoke test in CI
 
 ## Phase 2: The instrument
@@ -28,7 +28,7 @@ The milestone that decides whether the idea works:
 - Six drone voices and two melodic voices
 - All six mood macros with data-driven mappings
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library
-- `voice`, `hold`, `release`, `panic`
+- `voice`, `hold`, `panic`
 
 ## Phase 3: Listening
 

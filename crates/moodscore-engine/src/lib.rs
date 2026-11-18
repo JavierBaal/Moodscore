@@ -29,8 +29,12 @@ pub const CHUNK: usize = 32;
 /// moves instantly reaches the DSP as a short glide, never a step.
 pub const SMOOTHING_SECONDS: f32 = 0.03;
 
-/// Fade-in applied when the engine starts, in seconds.
+/// Fade-in applied when the engine starts, in seconds, unless the output
+/// is told otherwise with [`EngineHandle::fade_to`] before audio starts.
 pub const FADE_IN_SECONDS: f32 = 1.5;
+
+/// The shortest output fade, in seconds. Anything faster would click.
+pub const MIN_FADE_SECONDS: f32 = 0.05;
 
 /// Integration time of the RMS meter, in seconds.
 const RMS_SECONDS: f32 = 0.3;
@@ -41,6 +45,12 @@ struct Shared {
     peak: AtomicU32,
     rms: AtomicU32,
     frames: AtomicU64,
+    /// Output gain the engine is fading toward (0 = silent, 1 = full).
+    fade_target: AtomicU32,
+    /// Fade speed, in gain per sample. Always positive.
+    fade_step: AtomicU32,
+    /// Current output gain, as last rendered.
+    fade_current: AtomicU32,
 }
 
 impl Shared {
@@ -121,6 +131,35 @@ impl EngineHandle {
         }
     }
 
+    /// Fade the whole output to `gain` (0..1) over `seconds`.
+    ///
+    /// This is the engine's transport: `fade_to(0.0, ..)` is a release to
+    /// silence, `fade_to(1.0, ..)` brings the sound in. The DSP keeps running
+    /// either way, so nothing about the sound itself is lost.
+    pub fn fade_to(&self, gain: f32, seconds: f32) {
+        let gain = if gain.is_finite() {
+            gain.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let seconds = if seconds.is_finite() { seconds } else { 0.0 }.max(MIN_FADE_SECONDS);
+        let current = Shared::load_f32(&self.shared.fade_current);
+        let distance = (gain - current).abs().max(1e-3);
+        let step = distance / (seconds * self.sample_rate as f32);
+        // Speed first, then destination: the audio thread never sees a new
+        // target with a stale speed for more than one chunk.
+        Shared::store_f32(&self.shared.fade_step, step);
+        Shared::store_f32(&self.shared.fade_target, gain);
+    }
+
+    /// Current output gain (0..1) and the gain it is fading toward.
+    pub fn output_gain(&self) -> (f32, f32) {
+        (
+            Shared::load_f32(&self.shared.fade_current),
+            Shared::load_f32(&self.shared.fade_target),
+        )
+    }
+
     /// Total frames rendered since the engine started.
     pub fn frames_rendered(&self) -> u64 {
         self.shared.frames.load(Ordering::Relaxed)
@@ -138,7 +177,6 @@ pub struct Renderer {
     smoothing_coef: f32,
     primed: bool,
     fade: f32,
-    fade_step: f32,
     rms_sq: f32,
     rms_coef: f32,
     left: [f32; CHUNK],
@@ -161,6 +199,9 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         peak: AtomicU32::new(0f32.to_bits()),
         rms: AtomicU32::new(0f32.to_bits()),
         frames: AtomicU64::new(0),
+        fade_target: AtomicU32::new(1f32.to_bits()),
+        fade_step: AtomicU32::new((1.0 / (FADE_IN_SECONDS * sample_rate as f32)).to_bits()),
+        fade_current: AtomicU32::new(0f32.to_bits()),
     });
 
     let log_domain: Box<[bool]> = params
@@ -179,7 +220,6 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         smoothing_coef: 1.0 - (-chunk_seconds / SMOOTHING_SECONDS).exp(),
         primed: false,
         fade: 0.0,
-        fade_step: 1.0 / (FADE_IN_SECONDS * sr),
         rms_sq: 0.0,
         rms_coef: 1.0 - (-chunk_seconds / RMS_SECONDS).exp(),
         left: [0.0; CHUNK],
@@ -245,13 +285,19 @@ impl Renderer {
         let (l, r) = (&mut self.left[..n], &mut self.right[..n]);
         self.dsp.compute(l, r);
 
+        let fade_target = Shared::load_f32(&self.shared.fade_target);
+        let fade_step = Shared::load_f32(&self.shared.fade_step);
         let mut peak = 0.0f32;
         let mut sum_sq = 0.0f32;
         for i in 0..n {
             let g = self.fade;
             self.left[i] *= g;
             self.right[i] *= g;
-            self.fade = (self.fade + self.fade_step).min(1.0);
+            self.fade = if self.fade < fade_target {
+                (self.fade + fade_step).min(fade_target)
+            } else {
+                (self.fade - fade_step).max(fade_target)
+            };
             let (a, b) = (self.left[i].abs(), self.right[i].abs());
             peak = peak.max(a).max(b);
             sum_sq += 0.5 * (a * a + b * b);
@@ -259,6 +305,7 @@ impl Renderer {
         let mean_sq = sum_sq / n.max(1) as f32;
         self.rms_sq += (mean_sq - self.rms_sq) * self.rms_coef;
 
+        Shared::store_f32(&self.shared.fade_current, self.fade);
         Shared::store_f32(&self.shared.peak, peak);
         Shared::store_f32(&self.shared.rms, self.rms_sq.sqrt());
         self.shared.frames.fetch_add(n as u64, Ordering::Relaxed);
@@ -305,6 +352,31 @@ mod tests {
         let (_h, mut r) = new(SR);
         let out = run(&mut r, 0.01);
         assert!(out[0].abs() < 1e-4);
+    }
+
+    #[test]
+    fn can_start_silent_then_fade_in_and_release_without_clicks() {
+        let (h, mut r) = new(SR);
+        h.fade_to(0.0, 0.0); // before any audio: start silent
+        let silent = run(&mut r, 1.0);
+        assert!(silent.iter().all(|s| s.abs() < 1e-6), "not silent");
+
+        h.fade_to(1.0, 1.0);
+        let fading_in = run(&mut r, 1.2);
+        assert_eq!(h.output_gain(), (1.0, 1.0));
+        let max_jump = fading_in
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(max_jump < 0.05, "jump of {max_jump}");
+
+        h.fade_to(0.0, 0.5);
+        let releasing = run(&mut r, 0.6);
+        assert_eq!(h.output_gain(), (0.0, 0.0));
+        assert!(
+            releasing[releasing.len() - 1].abs() < 1e-6,
+            "release did not reach silence"
+        );
     }
 
     #[test]

@@ -106,8 +106,11 @@ fn load_macros(file: Option<&str>, params: &[ParamInfo]) -> Result<Vec<MacroDef>
 }
 
 /// Open the audio device and start the director against it.
+///
+/// With `silent`, the engine starts at zero output gain and waits for `start`.
 fn start_live(
     macros_file: Option<&str>,
+    silent: bool,
 ) -> Result<(Conductor, moodscore_engine::audio::AudioOutput)> {
     // Validate the mappings before any sound starts.
     let params = moodscore_dsp::Dsp::new(OFFLINE_SAMPLE_RATE)
@@ -117,6 +120,9 @@ fn start_live(
 
     let mut conductor = None;
     let (_engine, output) = moodscore_engine::audio::start_default_output(|engine| {
+        if silent {
+            engine.fade_to(0.0, 0.0);
+        }
         let director = Director::new(engine.params().to_vec(), macros);
         conductor = Some(Conductor::start(director, engine.clone()));
     })?;
@@ -131,6 +137,7 @@ fn start_live(
 /// Run the engine in real time without an audio device (testing, CI).
 fn start_headless(macros_file: Option<&str>) -> Result<Conductor> {
     let (engine, mut renderer) = moodscore_engine::new(OFFLINE_SAMPLE_RATE);
+    engine.fade_to(0.0, 0.0); // silent until `start`, like live `serve`
     let macros = load_macros(macros_file, engine.params())?;
     let conductor = Conductor::start(Director::new(engine.params().to_vec(), macros), engine);
     thread::Builder::new()
@@ -157,10 +164,10 @@ fn serve(macros_file: Option<&str>, no_audio: bool) -> Result<()> {
     let (conductor, _output) = if no_audio {
         (start_headless(macros_file)?, None)
     } else {
-        let (c, o) = start_live(macros_file)?;
+        let (c, o) = start_live(macros_file, true)?;
         (c, Some(o))
     };
-    eprintln!("moodscore: MCP server ready on stdio");
+    eprintln!("moodscore: MCP server ready on stdio (silent until `start`)");
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(moodscore_mcp::serve_stdio(conductor.clone()));
     conductor.stop();
@@ -177,7 +184,7 @@ const SCRIPT: [(f32, f32, f32, Curve); 3] = [
 ];
 
 fn play(seconds: f32, macros_file: Option<&str>) -> Result<()> {
-    let (conductor, _output) = start_live(macros_file)?;
+    let (conductor, _output) = start_live(macros_file, false)?;
     eprintln!(
         "moodscore: demo for {seconds:.0} s: darker, slowly, then opening up. Ctrl+C to stop."
     );

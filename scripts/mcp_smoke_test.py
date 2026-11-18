@@ -70,11 +70,22 @@ check("drone" in init["result"].get("instructions", ""), "server instructions pr
 send("notifications/initialized", notify=True)
 
 tools = {t["name"] for t in send("tools/list")["result"]["tools"]}
-check(tools == {"morph", "gesture", "get_state"}, f"tools/list -> {sorted(tools)}")
+check(
+    tools == {"start", "release", "morph", "gesture", "get_state"},
+    f"tools/list -> {sorted(tools)}",
+)
 
+time.sleep(1.0)
 err, text = call("get_state", {})
 state = json.loads(text)
 check(not err and state["macros"][0]["name"] == "darkness", "get_state")
+check(
+    not state["output"]["playing"] and state["output"]["peak_dbfs"] <= -100,
+    f"starts silent ({state['output']['peak_dbfs']} dBFS peak)",
+)
+
+err, text = call("start", {"over": 0.5})
+check(not err and json.loads(text)["output"]["playing"], "start")
 
 err, text = call("morph", {"darkness": 0.9, "over": 1.5, "curve": "ease_in_out"})
 check(not err and json.loads(text)["macros"][0]["target"] == 0.9, "morph darkness -> 0.9")
@@ -86,9 +97,21 @@ cutoff = next(p for p in state["params"] if p["path"] == "filter/cutoff")
 check(abs(dark["value"] - 0.9) < 1e-3, f"darkness arrived ({dark['value']})")
 check(cutoff["value"] < 250, f"filter closed ({cutoff['value']} Hz)")
 check(state["output"]["rms_dbfs"] > -60, f"engine is sounding ({state['output']['rms_dbfs']} dBFS)")
+check(state["output"]["gain"] == 1.0, "faded in fully")
 
 err, text = call("gesture", {"param": "drone_1/pitch", "to": 41.2, "over": 0.5})
 check(not err, "gesture drone_1/pitch")
+
+err, text = call("release", {"over": 0.5})
+check(not err and not json.loads(text)["output"]["playing"], "release")
+time.sleep(1.0)
+state = json.loads(call("get_state", {})[1])
+check(
+    state["output"]["gain"] == 0.0 and state["output"]["peak_dbfs"] <= -100,
+    f"released to silence ({state['output']['peak_dbfs']} dBFS peak)",
+)
+err, text = call("start", {"over": -1})
+check(err, f"bad fade time rejected: {text}")
 
 err, text = call("morph", {"darkness": 3})
 check(err and "outside" in text, f"out-of-range rejected: {text}")

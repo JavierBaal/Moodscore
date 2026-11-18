@@ -113,7 +113,7 @@ Other commands: `render drone.wav 30` writes the same demo to a file; `params` l
 
 ## Play it with Claude
 
-Moodscore is an MCP server. The client starts it, and it plays through your default audio device for as long as the client is connected.
+Moodscore is an MCP server. Your MCP client launches it, silent: nothing sounds until the agent calls `start`. From then on it plays through your default audio device until you ask the agent to stop, which fades it out with `release`, or until the client closes.
 
 **Claude Code**
 
