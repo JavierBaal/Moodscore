@@ -25,9 +25,20 @@ The milestone that decides whether the idea works:
 
 ## Phase 2: The instrument
 
+**Agreed order from here (19 Nov 2026):**
+
+1. Tempo clock in the audio thread, sample-accurate, with tempo gestures; harmony durations in bars.
+2. The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
+3. Audition: Claude's ears (render, analyse, describe).
+4. Step sequencer: arpeggios and ostinatos played by the note voices.
+5. Chained sections: a cue list the engine runs on its own.
+6. `density` and `distance` macros.
+
+Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
+
 Sound:
 - [x] Six drone voices (A minor chord at rest, two sounding), with energy-based normalisation
-- [ ] Two melodic voices (after harmony and the tempo clock: they need notes to play)
+- [ ] Two note voices (melodic), driven by the synth engine below
 - All six mood macros with data-driven mappings
   - [x] `instability` (pitch drift and detune)
   - [x] Macros can share a parameter (`"mode": "add"`) and target many with `*` patterns
@@ -39,8 +50,18 @@ Harmony:
 - [ ] Crossfading between chords (needs spare voices)
 - [ ] `tension` adds dissonance (suspensions, added ninths, clusters) on top of the harmony
 
-Arpeggios and ostinatos (planned with Fran on 19 Nov; needs the tempo clock and a note voice):
-- One note voice with an envelope (from plucked to pad): the first of the two melodic voices, brought forward
+Synth engine for Claude (agreed with Fran on 19 Nov): a Serum/Vital-style synth designed for an agent to shape sounds with, as the engine of the two note voices (and, later, perhaps the drones):
+- Oscillators: shape morphing (sine, triangle, saw, square, pulse width), FM between oscillators, sync, wavefolding, unison with detune and spread, sub and noise. Table-free to respect the no-locks rule; true wavetables later, written in Rust without locks.
+- Filters: low-pass, band-pass, high-pass, with drive.
+- Envelopes and LFOs, and a modulation matrix (any source to any parameter, a fixed number of slots).
+- Effects: distortion, chorus, delay, reverb.
+- Polyphony where it matters: a pluck needs its tail to ring under the next note (about 4 notes per voice); a lead is monophonic with portamento and delayed vibrato.
+- Presets as data, with names and descriptions, editable without recompiling: pluck, soft pluck, glass bell, lead, aggressive lead, note pad.
+- Tools to set a patch by name, save and load presets, and describe the current patch.
+- Audition, the part that makes it a synth *for Claude*: render a note or a phrase offline (not through the speakers), analyse it and return a description (brightness, attack, decay, harmonic content, noise, stereo width, pitch stability, loudness), so Claude can iterate by numbers while the person judges by ear.
+- Boundary: the note voices play motifs, ostinatos and arpeggios that repeat and follow the harmony. Long melodies composed note by note stay in Four Hands Studio; Phase 3's generative melody will build on these voices.
+
+Arpeggios and ostinatos (planned with Fran on 19 Nov; need the tempo clock and the note voices):
 - Step sequencer, 1–16 steps, sample-accurate in the audio thread
 - Arpeggios over the chord that is sounding (up, down, up-down, random; octaves; rate), following the harmony
 - Ostinatos: a short motif that either follows the harmony (transposed with each chord) or stays fixed while the harmony moves under it
@@ -56,7 +77,12 @@ Pulse (cinematic rhythm, not a drum machine):
 - The agent sets patterns; the engine plays them sample-accurately
 - `urgency` macro: pulse density, tempo and tension together ("time is running out")
 
+More macros, from the same live tests (each section needed many single gestures):
+- `density`: how many voices sound, 0..1, bringing voices in and out in a musical order
+- `distance`: near and dry to far and washed (reverb and its colour)
+
 Session:
+- Chained sections: a cue list (harmony, macros, voices and fades, each with when it enters, in seconds or bars) that the engine runs on its own. In the live tests of 19 Nov the agent chained sections by sleeping in a shell between calls: fragile (if the conversation stops, the piece freezes in its current section; Claude Desktop has no shell) and it nearly lost a section to an already-scheduled release.
 - [x] `start_in` for `start` and `release` (delayed fades, e.g. an outro that peaks before it dies)
 - [x] Live-play polish: curves as plain strings in the tool schemas, hand-set parameters stay put across morphs (`reclaim` to hand them back), brief reports grouped by macro
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library
