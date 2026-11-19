@@ -2,8 +2,36 @@
 //! oversampled shaper, the filter and three envelopes.
 
 use crate::dsp::{self, Coefs, Drive, Env, Mode, Oversampler, Svf};
+use crate::lfo::Lfo;
 use crate::osc::{Noise, Osc, Shape};
-use crate::params::{P, PARAMS};
+use crate::params::{DIVISION_BEATS, MOD_DESTS, MOD_SLOTS, P, PARAMS};
+
+/// What a voice needs from its part while it renders.
+#[derive(Copy, Clone, Debug)]
+pub struct Ctx {
+    /// Per-sample glide coefficient (1 = no glide).
+    pub glide_coef: f32,
+    /// The tempo, for synced LFOs.
+    pub quarters_per_second: f32,
+}
+
+impl Default for Ctx {
+    fn default() -> Self {
+        Self {
+            glide_coef: 1.0,
+            quarters_per_second: 2.0,
+        }
+    }
+}
+
+/// Parameter ids of the modulation destinations, in the order of [`MOD_DESTS`].
+fn dest_ids() -> [usize; 25] {
+    let mut ids = [usize::MAX; 25];
+    for (i, d) in MOD_DESTS.iter().enumerate().skip(1) {
+        ids[i] = crate::params::find(d).unwrap_or(usize::MAX);
+    }
+    ids
+}
 
 /// Most unison copies per oscillator.
 pub const MAX_UNISON: usize = 7;
@@ -45,9 +73,19 @@ pub struct Voice {
     filter_mode: Mode,
     steep: bool,
     sub_octave: f32,
+    lfo: [Lfo; 2],
+    /// Random per note, `-1..1`: a modulation source.
+    random: f32,
+    dests: [usize; 25],
+    /// Output gains (left, right) at the start and end of this control block.
+    gain_from: (f32, f32),
+    gain_to: (f32, f32),
+    fresh: bool,
     /// The note held, and whether its key is still down.
     pub(crate) note: Option<u8>,
     pub(crate) held: bool,
+    /// When the note started, for stealing the oldest.
+    pub(crate) age: u64,
     /// The previous FM modulator sample (oscillator 2, mono).
     fm_prev: f32,
     banks: [Bank; 2],
@@ -77,8 +115,15 @@ impl Voice {
             filter_mode: Mode::Low,
             steep: false,
             sub_octave: -1.0,
+            lfo: [Lfo::new(seed ^ 0x9e37), Lfo::new(seed ^ 0x7f4a)],
+            random: 0.0,
+            dests: dest_ids(),
+            gain_from: (1.0, 1.0),
+            gain_to: (1.0, 1.0),
+            fresh: true,
             note: None,
             held: false,
+            age: 0,
             fm_prev: 0.0,
             banks: Default::default(),
             ctl_left: 0,
@@ -92,7 +137,17 @@ impl Voice {
 
     /// Start a note. If the voice is still sounding (a retrigger, or a
     /// stolen voice), the envelopes rise from where they are: no click.
-    pub fn start(&mut self, patch: &[f32], note: u8, velocity: f32, glide_from: Option<f32>) {
+    ///
+    /// `glide_from` is the pitch to slide from; `free_phase` the running
+    /// phase of each LFO for those that don't restart with the note.
+    pub fn start(
+        &mut self,
+        patch: &[f32],
+        note: u8,
+        velocity: f32,
+        glide_from: Option<f32>,
+        free_phase: [f32; 2],
+    ) {
         let was_silent = !self.is_active();
         self.note = Some(note);
         self.held = true;
@@ -139,11 +194,29 @@ impl Voice {
                 f.clear();
             }
             self.fm_prev = 0.0;
+            self.fresh = true;
+        }
+        self.random = self.noise.white();
+        for (k, (lfo, rt)) in self
+            .lfo
+            .iter_mut()
+            .zip([P::Lfo1Retrigger, P::Lfo2Retrigger])
+            .enumerate()
+        {
+            let retrigger = rt.def().sanitize(patch[rt as usize]) >= 0.5;
+            lfo.start(if retrigger { 0.0 } else { free_phase[k] });
         }
         self.amp.gate_on();
         self.fenv.gate_on();
         self.menv.gate_on();
         self.ctl_left = 0;
+    }
+
+    /// Slide to another note without restarting anything (legato).
+    pub fn retarget(&mut self, note: u8) {
+        self.note = Some(note);
+        self.held = true;
+        self.target = note as f32;
     }
 
     /// Release the note: envelopes go to their release stage.
@@ -156,8 +229,67 @@ impl Voice {
 
     /// Refresh the live values from the patch and recompute what changes
     /// at control rate.
-    fn control(&mut self, patch: &[f32]) {
+    fn control(&mut self, patch: &[f32], ctx: &Ctx) {
+        let dt = CONTROL_BLOCK as f32 / self.sr;
+        // LFOs move at the rate of the last block (their rate can be modulated).
+        let mut lfo = [0.0f32; 2];
+        for (k, (shape, rate, sync, div, delay, fade)) in [
+            (
+                P::Lfo1Shape,
+                P::Lfo1Rate,
+                P::Lfo1Sync,
+                P::Lfo1Division,
+                P::Lfo1Delay,
+                P::Lfo1Fade,
+            ),
+            (
+                P::Lfo2Shape,
+                P::Lfo2Rate,
+                P::Lfo2Sync,
+                P::Lfo2Division,
+                P::Lfo2Delay,
+                P::Lfo2Fade,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let d = |p: P| p.def().sanitize(patch[p as usize]);
+            let hz = if d(sync) >= 0.5 {
+                ctx.quarters_per_second / DIVISION_BEATS[d(div) as usize]
+            } else {
+                self.live[rate as usize]
+            };
+            lfo[k] = self.lfo[k].advance(dt, hz, d(shape) as u8, d(delay), d(fade));
+        }
+
         self.live.copy_from_slice(patch);
+        let sources = [
+            0.0,
+            self.menv.level,
+            self.fenv.level,
+            self.amp.level,
+            lfo[0],
+            lfo[1],
+            self.velocity,
+            ((self.pitch - 60.0) / 48.0).clamp(-1.0, 1.0),
+            self.random,
+            patch[P::Expression as usize],
+        ];
+        for slot in 0..MOD_SLOTS {
+            let base = P::Mod1Source as usize + 3 * slot;
+            let src = PARAMS[base].sanitize(patch[base]) as usize;
+            let dst = PARAMS[base + 1].sanitize(patch[base + 1]) as usize;
+            let amount = patch[base + 2];
+            if src == 0 || dst == 0 || amount == 0.0 {
+                continue;
+            }
+            let id = self.dests[dst];
+            let def = &PARAMS[id];
+            let n = def.normalize(self.live[id]) + amount * sources[src];
+            self.live[id] = def.denormalize(n);
+        }
+
         let v = &self.live;
         let g = |p: P| v[p as usize];
         let ids = [
@@ -207,18 +339,28 @@ impl Voice {
                 bank.gain[i] = (a.cos() * norm, a.sin() * norm);
             }
         }
+        let gain = g(P::VoiceGain);
+        let pan = g(P::VoicePan);
+        let to = (gain * (1.0 - pan).min(1.0), gain * (1.0 + pan).min(1.0));
+        // A fresh note starts at its gain; a sounding one ramps to it.
+        self.gain_from = if self.fresh { to } else { self.gain_to };
+        self.gain_to = to;
+        self.fresh = false;
     }
 
     /// Render `left.len()` samples, adding into the buffers.
-    pub fn render(&mut self, patch: &[f32], glide_coef: f32, left: &mut [f32], right: &mut [f32]) {
+    pub fn render(&mut self, patch: &[f32], ctx: &Ctx, left: &mut [f32], right: &mut [f32]) {
         let sr = self.sr;
         let inv_sr = 1.0 / sr;
         for i in 0..left.len() {
             if self.ctl_left == 0 {
-                self.control(patch);
+                self.control(patch, ctx);
                 self.ctl_left = CONTROL_BLOCK;
             }
             self.ctl_left -= 1;
+            let k = 1.0 - self.ctl_left as f32 / CONTROL_BLOCK as f32;
+            let out_l = self.gain_from.0 + (self.gain_to.0 - self.gain_from.0) * k;
+            let out_r = self.gain_from.1 + (self.gain_to.1 - self.gain_from.1) * k;
             let v = &self.live;
             let g = |p: P| v[p as usize];
 
@@ -248,8 +390,8 @@ impl Voice {
                 break;
             }
 
-            self.pitch += (self.target - self.pitch) * glide_coef;
-            let hz = 440.0 * ((self.pitch - 69.0) / 12.0).exp2();
+            self.pitch += (self.target - self.pitch) * ctx.glide_coef;
+            let hz = 440.0 * ((self.pitch + g(P::Bend) - 69.0) / 12.0).exp2();
             let inc = hz * inv_sr;
 
             // Oscillator 2 first: it is the FM modulator.
@@ -312,8 +454,8 @@ impl Voice {
 
             let vs = g(P::Velocity);
             let gain = a * (1.0 - vs + vs * self.velocity);
-            left[i] += l * gain;
-            right[i] += r * gain;
+            left[i] += l * gain * out_l;
+            right[i] += r * gain * out_r;
         }
     }
 }

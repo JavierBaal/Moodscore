@@ -91,7 +91,10 @@ impl ParamDef {
 
 pub const FILTER_TYPES: &[&str] = &["low_pass", "band_pass", "high_pass"];
 pub const LFO_SHAPES: &[&str] = &["sine", "triangle", "saw", "square", "random"];
-/// Tempo divisions for synced LFOs, in beats.
+/// Tempo divisions for synced LFOs, and their length in quarter notes.
+/// Number of modulation slots.
+pub const MOD_SLOTS: usize = 8;
+
 pub const DIVISIONS: &[&str] = &[
     "1/32", "1/16", "1/16t", "1/8", "1/8t", "1/8d", "1/4", "1/4t", "1/4d", "1/2", "1/2d", "1", "2",
     "4",
@@ -112,6 +115,36 @@ pub const DIVISION_BEATS: &[f32] = &[
     8.0,
     16.0,
 ];
+/// Where a modulation slot can send its source: every continuous parameter
+/// that makes sense to move while a note sounds.
+pub const MOD_DESTS: &[&str] = &[
+    "none",
+    "pitch/bend",
+    "voice/gain",
+    "voice/pan",
+    "osc1/level",
+    "osc1/shape",
+    "osc1/pw",
+    "osc1/fine",
+    "osc1/detune",
+    "osc1/sync",
+    "osc2/level",
+    "osc2/shape",
+    "osc2/pw",
+    "osc2/fine",
+    "osc2/detune",
+    "osc2/sync",
+    "fm/amount",
+    "sub/level",
+    "noise/level",
+    "shape/fold",
+    "shape/drive",
+    "filter/cutoff",
+    "filter/resonance",
+    "lfo1/rate",
+    "lfo2/rate",
+];
+
 pub const MOD_SOURCES: &[&str] = &[
     "none",
     "mod_env",
@@ -202,6 +235,56 @@ params! {
     MenvDecay = "mod_env/decay", 0.005, 20.0, 0.5, Log, S, "modulation envelope decay";
     MenvSustain = "mod_env/sustain", 0.0, 1.0, 0.0, Linear, None, "modulation envelope sustain level";
     MenvRelease = "mod_env/release", 0.005, 20.0, 0.5, Log, S, "modulation envelope release";
+
+    PartVoices = "part/voices", 1.0, 4.0, 4.0, Int, None, "notes that can sound at once (1 = monophonic)";
+    PartLegato = "part/legato", 0.0, 1.0, 0.0, Int, None, "monophonic only: 1 slides between overlapping notes without restarting the envelopes";
+    PartGlide = "part/glide", 0.0, 5.0, 0.0, Linear, S, "portamento: time to slide to a new note";
+    Expression = "part/expression", 0.0, 1.0, 0.0, Linear, None, "a free control for the agent to move, routed by the modulation slots";
+
+    Bend = "pitch/bend", -12.0, 12.0, 0.0, Linear, ST, "pitch offset (a modulation target for vibrato and swoops)";
+    VoiceGain = "voice/gain", 0.0, 1.0, 1.0, Linear, None, "voice volume (a modulation target for tremolo)";
+    VoicePan = "voice/pan", -1.0, 1.0, 0.0, Linear, None, "voice position (a modulation target for auto-pan)";
+
+    Lfo1Shape = "lfo1/shape", 0.0, 4.0, 0.0, Choice(LFO_SHAPES), None, "sine, triangle, saw, square or random (sample and hold)";
+    Lfo1Rate = "lfo1/rate", 0.01, 30.0, 5.0, Log, HZ, "speed when not synced";
+    Lfo1Sync = "lfo1/sync", 0.0, 1.0, 0.0, Int, None, "1 locks the speed to the tempo";
+    Lfo1Division = "lfo1/division", 0.0, 13.0, 6.0, Choice(DIVISIONS), None, "cycle length when synced (1/4 = a quarter note)";
+    Lfo1Delay = "lfo1/delay", 0.0, 5.0, 0.0, Linear, S, "wait after the note starts";
+    Lfo1Fade = "lfo1/fade", 0.0, 5.0, 0.0, Linear, S, "time to fade in after the delay";
+    Lfo1Retrigger = "lfo1/retrigger", 0.0, 1.0, 1.0, Int, None, "1 restarts with each note, 0 runs freely";
+
+    Lfo2Shape = "lfo2/shape", 0.0, 4.0, 1.0, Choice(LFO_SHAPES), None, "sine, triangle, saw, square or random (sample and hold)";
+    Lfo2Rate = "lfo2/rate", 0.01, 30.0, 0.5, Log, HZ, "speed when not synced";
+    Lfo2Sync = "lfo2/sync", 0.0, 1.0, 0.0, Int, None, "1 locks the speed to the tempo";
+    Lfo2Division = "lfo2/division", 0.0, 13.0, 9.0, Choice(DIVISIONS), None, "cycle length when synced";
+    Lfo2Delay = "lfo2/delay", 0.0, 5.0, 0.0, Linear, S, "wait after the note starts";
+    Lfo2Fade = "lfo2/fade", 0.0, 5.0, 0.0, Linear, S, "time to fade in after the delay";
+    Lfo2Retrigger = "lfo2/retrigger", 0.0, 1.0, 0.0, Int, None, "1 restarts with each note, 0 runs freely";
+
+    Mod1Source = "mod1/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 1: what moves";
+    Mod1Dest = "mod1/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 1: what it moves";
+    Mod1Amount = "mod1/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 1: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod2Source = "mod2/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 2: what moves";
+    Mod2Dest = "mod2/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 2: what it moves";
+    Mod2Amount = "mod2/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 2: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod3Source = "mod3/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 3: what moves";
+    Mod3Dest = "mod3/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 3: what it moves";
+    Mod3Amount = "mod3/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 3: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod4Source = "mod4/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 4: what moves";
+    Mod4Dest = "mod4/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 4: what it moves";
+    Mod4Amount = "mod4/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 4: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod5Source = "mod5/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 5: what moves";
+    Mod5Dest = "mod5/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 5: what it moves";
+    Mod5Amount = "mod5/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 5: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod6Source = "mod6/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 6: what moves";
+    Mod6Dest = "mod6/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 6: what it moves";
+    Mod6Amount = "mod6/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 6: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod7Source = "mod7/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 7: what moves";
+    Mod7Dest = "mod7/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 7: what it moves";
+    Mod7Amount = "mod7/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 7: how far, as a fraction of the target's range (of its octaves for frequencies)";
+    Mod8Source = "mod8/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 8: what moves";
+    Mod8Dest = "mod8/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 8: what it moves";
+    Mod8Amount = "mod8/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 8: how far, as a fraction of the target's range (of its octaves for frequencies)";
 }
 
 impl P {
@@ -259,6 +342,10 @@ mod tests {
             }
         }
         assert_eq!(DIVISIONS.len(), DIVISION_BEATS.len());
+        for d in &MOD_DESTS[1..] {
+            let id = find(d).unwrap_or_else(|| panic!("mod dest {d} is not a parameter"));
+            assert!(!PARAMS[id].kind.is_discrete(), "mod dest {d} is discrete");
+        }
         assert_eq!(P::Osc1Level.def().path, "osc1/level");
         assert_eq!(find("filter/cutoff"), Some(P::Cutoff as usize));
     }

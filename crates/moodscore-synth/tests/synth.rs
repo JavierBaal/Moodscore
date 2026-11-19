@@ -78,7 +78,7 @@ fn oscillators_are_band_limited() {
 
 // ---------------------------------------------------------------- voice
 
-use moodscore_synth::{Patch, Voice, P};
+use moodscore_synth::{Ctx, Patch, Voice, P};
 
 fn patch(f: impl FnOnce(&mut Patch)) -> Patch {
     let mut p = Patch::default();
@@ -104,7 +104,7 @@ fn run(v: &mut Voice, p: &Patch, frames: usize) -> (Vec<f32>, Vec<f32>) {
     let mut r = vec![0.0; frames];
     for c in (0..frames).step_by(64) {
         let e = (c + 64).min(frames);
-        v.render(&p.0, 1.0, &mut l[c..e], &mut r[c..e]);
+        v.render(&p.0, &Ctx::default(), &mut l[c..e], &mut r[c..e]);
     }
     (l, r)
 }
@@ -119,7 +119,7 @@ fn max_step(x: &[f32]) -> f32 {
 fn notes_start_and_stop_without_clicks() {
     let p = sine_patch();
     let mut v = Voice::new(48_000, 1);
-    v.start(&p.0, 57, 1.0, None); // A3, 220 Hz
+    v.start(&p.0, 57, 1.0, None, [0.0; 2]); // A3, 220 Hz
     let (on, _) = run(&mut v, &p, 4800);
     // A 220 Hz sine at full scale moves at most 2π·220/48000 per sample.
     let sine_step = std::f32::consts::TAU * 220.0 / 48_000.0;
@@ -135,11 +135,11 @@ fn notes_start_and_stop_without_clicks() {
     assert!(off[4000..].iter().all(|&s| s == 0.0));
     // A retrigger during the release rises from where it is.
     let mut v = Voice::new(48_000, 1);
-    v.start(&p.0, 57, 1.0, None);
+    v.start(&p.0, 57, 1.0, None, [0.0; 2]);
     let (mut a, _) = run(&mut v, &p, 2400);
     v.release();
     let (b, _) = run(&mut v, &p, 100);
-    v.start(&p.0, 57, 1.0, None);
+    v.start(&p.0, 57, 1.0, None, [0.0; 2]);
     let (c, _) = run(&mut v, &p, 2400);
     a.extend(b);
     a.extend(c);
@@ -150,7 +150,7 @@ fn notes_start_and_stop_without_clicks() {
 fn latency_is_fixed_and_short() {
     let p = sine_patch();
     let mut v = Voice::new(48_000, 1);
-    v.start(&p.0, 69, 1.0, None);
+    v.start(&p.0, 69, 1.0, None, [0.0; 2]);
     let (l, _) = run(&mut v, &p, 256);
     let first = l.iter().position(|s| s.abs() > 1e-6).unwrap();
     assert!(first <= 16, "first sound after {first} samples");
@@ -164,7 +164,7 @@ fn unison_is_balanced_and_spread() {
         p.set(P::Osc1Detune, 30.0);
     });
     let mut v = Voice::new(48_000, 7);
-    v.start(&p.0, 45, 1.0, None);
+    v.start(&p.0, 45, 1.0, None, [0.0; 2]);
     let (l, r) = run(&mut v, &p, 96_000);
     let e = |x: &[f32]| x[4800..].iter().map(|s| s * s).sum::<f32>();
     let db = 10.0 * (e(&l) / e(&r)).log10();
@@ -185,7 +185,7 @@ fn unison_is_balanced_and_spread() {
         p.set(P::Osc1Spread, 0.0);
     });
     let mut v = Voice::new(48_000, 7);
-    v.start(&p.0, 45, 1.0, None);
+    v.start(&p.0, 45, 1.0, None, [0.0; 2]);
     let (l, r) = run(&mut v, &p, 4800);
     assert!(l.iter().zip(&r).all(|(a, b)| (a - b).abs() < 1e-5));
 }
@@ -223,7 +223,7 @@ fn the_filter_envelope_opens_the_sound() {
             p.set(P::FenvSustain, 1.0);
         });
         let mut v = Voice::new(48_000, 3);
-        v.start(&p.0, 45, 1.0, None);
+        v.start(&p.0, 45, 1.0, None, [0.0; 2]);
         let (l, _) = run(&mut v, &p, 9600);
         // Energy of the first difference: a rough brightness.
         l[4800..]
@@ -251,7 +251,7 @@ fn cost_of_a_heavy_voice() {
         p.set(P::FilterSlope, 24.0);
     });
     let mut v = Voice::new(48_000, 1);
-    v.start(&p.0, 45, 1.0, None);
+    v.start(&p.0, 45, 1.0, None, [0.0; 2]);
     let n = 480_000;
     let t = std::time::Instant::now();
     let (l, _) = run(&mut v, &p, n);
