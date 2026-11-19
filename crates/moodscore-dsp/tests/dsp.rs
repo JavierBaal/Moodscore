@@ -129,3 +129,61 @@ fn voices_are_tuned_to_an_open_minor_chord_and_only_two_sound_at_rest() {
         .count();
     assert_eq!(sounding, 2);
 }
+
+/// Energy difference left minus right, in dB, and the lag (in samples) at
+/// which the channels line up best (positive: right comes late).
+fn balance(l: &[f32], r: &[f32]) -> (f32, i32) {
+    let e = |x: &[f32]| x.iter().map(|s| (*s as f64).powi(2)).sum::<f64>();
+    let db = (10.0 * (e(l) / e(r)).log10()) as f32;
+    let n = l.len().min(48_000);
+    let lag = (-64..=64)
+        .max_by(|&a, &b| {
+            let c = |k: i32| {
+                (64..n - 64)
+                    .map(|i| l[i] as f64 * r[(i as i32 + k) as usize] as f64)
+                    .sum::<f64>()
+            };
+            c(a).total_cmp(&c(b))
+        })
+        .unwrap();
+    (db, lag)
+}
+
+#[test]
+fn the_stereo_image_is_centred() {
+    // An uneven reverb once tipped the bass a couple of dB to the right
+    // (see the mono_bass notes in moodscore.dsp).
+    let mut cases = vec![("at rest", Dsp::new(SR))];
+    let mut six = Dsp::new(SR);
+    for v in 1..=6 {
+        let id = six.param_id(&format!("drone_{v}/level")).unwrap();
+        six.set(id, 0.5);
+    }
+    cases.push(("six voices", six));
+    for (label, mut dsp) in cases {
+        let (l, r) = render(&mut dsp, 12.0);
+        let skip = 3 * SR as usize;
+        let (db, _) = balance(&l[skip..], &r[skip..]);
+        assert!(db.abs() < 0.5, "{label}: left-right {db:+.2} dB");
+    }
+}
+
+#[test]
+fn no_channel_is_delayed() {
+    // With every source centred and identical on both sides (no detune, no
+    // drift, no reverb), the channels must match sample for sample. A
+    // one-sided delay once pulled the whole image to the left.
+    let mut dsp = Dsp::new(SR);
+    for (path, v) in [("space/reverb_mix", 0.0), ("drone_2/level", 0.0)] {
+        let id = dsp.param_id(path).unwrap();
+        dsp.set(id, v);
+    }
+    for path in ["drone_1/detune", "drone_1/drift"] {
+        let id = dsp.param_id(path).unwrap();
+        dsp.set(id, 0.0);
+    }
+    let (l, r) = render(&mut dsp, 2.0);
+    let (db, lag) = balance(&l[SR as usize..], &r[SR as usize..]);
+    assert_eq!(lag, 0, "channels {lag} samples apart");
+    assert!(db.abs() < 0.01, "left-right {db:+.3} dB");
+}
