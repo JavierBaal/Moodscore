@@ -2,7 +2,7 @@
 //!
 //! The tools an AI agent uses to play Moodscore, as described in
 //! `docs/MCP_TOOLS.md`: `start` and `release` (the transport), `morph`
-//! (the `darkness` macro), `gesture` and `get_state`.
+//! (the mood macros), `gesture`, `set_pace` and `get_state`.
 //!
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
@@ -31,6 +31,10 @@ is a shock.
 - Prefer `morph` (mood macros) over `gesture` (single parameters). Use \
 `gesture` for a specific touch the macros don't cover, such as retuning the \
 drone with drone_1/pitch.
+- If the person sets a general pace (\"everything slow today\", \"short and \
+direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
+call. Give `over` or `curve` explicitly only when a single move should differ \
+from the pace. `get_state` reports the current pace.
 - You can change your mind at any time: a new instruction starts from wherever \
 the sound is, never with a jump.
 - Call `get_state` to see what is moving, how long it has left, and how loud \
@@ -73,9 +77,11 @@ impl From<CurveArg> for Curve {
 pub struct MorphArgs {
     /// Darkness, 0.0 to 1.0. 0 is open and airy; 1 is closed, low and murky.
     pub darkness: Option<f32>,
-    /// Seconds to get there. 0 means as fast as is musically safe. Default 10.
+    /// Instability, 0.0 to 1.0. 0 is steady and pure; 1 is wavering, beating and seasick.
+    pub instability: Option<f32>,
+    /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
-    /// Shape of the movement. Default ease_in_out.
+    /// Shape of the movement. Default: the current pace.
     pub curve: Option<CurveArg>,
 }
 
@@ -85,9 +91,9 @@ pub struct GestureArgs {
     pub param: String,
     /// Target value, inside the parameter's range.
     pub to: f32,
-    /// Seconds to get there. 0 means as fast as is musically safe. Default 10.
+    /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
-    /// Shape of the movement. Default ease_in_out.
+    /// Shape of the movement. Default: the current pace.
     pub curve: Option<CurveArg>,
     /// Seconds to wait before starting. Default 0.
     pub start_in: Option<f32>,
@@ -95,6 +101,14 @@ pub struct GestureArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetStateArgs {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPaceArgs {
+    /// Default seconds for every move that doesn't give its own. 0 means as fast as is musically safe. Omit to keep the current value.
+    pub over: Option<f32>,
+    /// Default shape for every move that doesn't give its own. Omit to keep the current value.
+    pub curve: Option<CurveArg>,
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct StartArgs {
@@ -108,7 +122,6 @@ pub struct ReleaseArgs {
     pub over: Option<f32>,
 }
 
-const DEFAULT_OVER: f32 = 10.0;
 const DEFAULT_START: f32 = 3.0;
 const DEFAULT_RELEASE: f32 = 8.0;
 const MAX_FADE: f32 = 600.0;
@@ -193,15 +206,19 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Phase 1 has one macro: darkness. Returns the new state."
+        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Returns the new state."
     )]
     fn morph(&self, Parameters(args): Parameters<MorphArgs>) -> Result<String, String> {
         let mut changes = Vec::new();
         if let Some(v) = args.darkness {
             changes.push(("darkness", v));
         }
-        let over = args.over.unwrap_or(DEFAULT_OVER);
-        let curve = args.curve.map(Curve::from).unwrap_or_default();
+        if let Some(v) = args.instability {
+            changes.push(("instability", v));
+        }
+        let pace = self.conductor.pace();
+        let over = args.over.unwrap_or(pace.over);
+        let curve = args.curve.map(Curve::from).unwrap_or(pace.curve);
         self.conductor
             .morph(&changes, over, curve)
             .map_err(|e| e.to_string())?;
@@ -212,8 +229,9 @@ impl MoodscoreServer {
         description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example retuning the drone with drone_1/pitch). Takes that parameter out of macro control until the next morph of its macro. Returns the new state."
     )]
     fn gesture(&self, Parameters(args): Parameters<GestureArgs>) -> Result<String, String> {
-        let over = args.over.unwrap_or(DEFAULT_OVER);
-        let curve = args.curve.map(Curve::from).unwrap_or_default();
+        let pace = self.conductor.pace();
+        let over = args.over.unwrap_or(pace.over);
+        let curve = args.curve.map(Curve::from).unwrap_or(pace.curve);
         let start_in = args.start_in.unwrap_or(0.0);
         self.conductor
             .gesture(&args.param, args.to, over, curve, start_in)
@@ -222,7 +240,17 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "See what Moodscore is doing: whether it is playing, every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
+        description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the new state."
+    )]
+    fn set_pace(&self, Parameters(args): Parameters<SetPaceArgs>) -> Result<String, String> {
+        self.conductor
+            .set_pace(args.over, args.curve.map(Curve::from))
+            .map_err(|e| e.to_string())?;
+        Ok(self.report())
+    }
+
+    #[tool(
+        description = "See what Moodscore is doing: whether it is playing, the current pace, every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
     )]
     fn get_state(&self, Parameters(_): Parameters<GetStateArgs>) -> String {
         self.report()

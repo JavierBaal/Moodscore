@@ -42,6 +42,24 @@ pub const MAX_DURATION: f32 = 600.0;
 /// How often the control loop updates the engine.
 pub const CONTROL_RATE_HZ: u32 = 500;
 
+/// The standing default for how long transitions take and their shape, used
+/// by every call that doesn't give its own. Set with [`Director::set_pace`].
+#[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+pub struct Pace {
+    /// Seconds. `0` means "as fast as is musically safe".
+    pub over: f32,
+    pub curve: Curve,
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Self {
+            over: 10.0,
+            curve: Curve::EaseInOut,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum DirectorError {
     UnknownMacro(String),
@@ -196,6 +214,7 @@ pub struct Director {
     macros: Vec<MacroDef>,
     macro_lanes: Vec<Lane>,
     lanes: Vec<ParamLane>,
+    pace: Pace,
 }
 
 impl Director {
@@ -231,6 +250,7 @@ impl Director {
             macros,
             macro_lanes,
             lanes,
+            pace: Pace::default(),
         };
         d.tick(0.0);
         d
@@ -248,6 +268,34 @@ impl Director {
 
     pub fn macros(&self) -> &[MacroDef] {
         &self.macros
+    }
+
+    /// The standing default for transitions.
+    pub fn pace(&self) -> Pace {
+        self.pace
+    }
+
+    /// Change the standing default for transitions. Omitted fields keep their
+    /// current value. Movements already under way are not affected; the new
+    /// pace applies to the next call that doesn't give its own `over` or curve.
+    pub fn set_pace(
+        &mut self,
+        over: Option<f32>,
+        curve: Option<Curve>,
+    ) -> Result<Pace, DirectorError> {
+        if over.is_none() && curve.is_none() {
+            return Err(DirectorError::Invalid(
+                "set_pace needs 'over', 'curve' or both".into(),
+            ));
+        }
+        if let Some(o) = over {
+            check_duration(o)?;
+            self.pace.over = o;
+        }
+        if let Some(c) = curve {
+            self.pace.curve = c;
+        }
+        Ok(self.pace)
     }
 
     /// Move one or more mood macros. Parameters a macro drives come back under
@@ -436,7 +484,11 @@ impl Director {
             })
             .collect();
 
-        State { macros, params }
+        State {
+            pace: self.pace,
+            macros,
+            params,
+        }
     }
 }
 
@@ -455,6 +507,8 @@ fn round(x: f32) -> f32 {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct State {
+    /// Default duration and curve for calls that don't give their own.
+    pub pace: Pace,
     pub macros: Vec<MacroState>,
     pub params: Vec<ParamState>,
 }
@@ -564,6 +618,14 @@ impl Conductor {
     pub fn state(&self) -> State {
         let now = self.now();
         self.lock().state(now)
+    }
+
+    pub fn pace(&self) -> Pace {
+        self.lock().pace()
+    }
+
+    pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {
+        self.lock().set_pace(over, curve)
     }
 
     /// Stop the control loop.

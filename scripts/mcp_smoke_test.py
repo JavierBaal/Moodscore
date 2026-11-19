@@ -71,7 +71,7 @@ send("notifications/initialized", notify=True)
 
 tools = {t["name"] for t in send("tools/list")["result"]["tools"]}
 check(
-    tools == {"start", "release", "morph", "gesture", "get_state"},
+    tools == {"start", "release", "morph", "gesture", "set_pace", "get_state"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -101,6 +101,22 @@ check(state["output"]["gain"] == 1.0, "faded in fully")
 
 err, text = call("gesture", {"param": "drone_1/pitch", "to": 41.2, "over": 0.5})
 check(not err, "gesture drone_1/pitch")
+
+err, text = call("set_pace", {"over": 40, "curve": "linear"})
+pace = json.loads(text)["pace"] if not err else None
+check(pace == {"over": 40.0, "curve": "linear"}, f"set_pace -> {pace}")
+err, text = call("morph", {"instability": 0.8})
+state = json.loads(text)
+inst = next(m for m in state["macros"] if m["name"] == "instability")
+check(
+    not err and inst["target"] == 0.8 and 39 < inst["seconds_remaining"] <= 40,
+    f"morph without 'over' follows the pace ({inst['seconds_remaining']} s left)",
+)
+err, text = call("morph", {"instability": 0.2, "over": 0.5})
+inst = next(m for m in json.loads(text)["macros"] if m["name"] == "instability")
+check(not err and inst["seconds_remaining"] <= 0.5, "explicit 'over' overrides the pace")
+err, text = call("set_pace", {})
+check(err, f"empty set_pace rejected: {text}")
 
 err, text = call("release", {"over": 0.5})
 check(not err and not json.loads(text)["output"]["playing"], "release")

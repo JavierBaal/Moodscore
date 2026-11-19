@@ -11,6 +11,14 @@
         { "param": "drone_1/level",    "from": 0.65, "to": 0.8 },
         { "param": "space/reverb_mix", "from": 0.3,  "to": 0.5 }
       ]
+    },
+    "instability": {
+      "description": "How unsteady the drone is. 0 = steady and pure, 1 = wavering, beating and seasick.",
+      "default": 0.3,
+      "targets": [
+        { "param": "drone_1/drift",  "from": 0.05, "to": 1.0 },
+        { "param": "drone_1/detune", "from": 2,    "to": 22 }
+      ]
     }
   }
 }

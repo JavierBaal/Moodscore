@@ -4,7 +4,7 @@
 
 Tell it how the scene should feel. It moves the sound there.
 
-> **Status: Phase 1.** You can play it live from Claude (or any MCP client): one drone voice, one mood macro (`darkness`), smooth gestures with no clicks or jumps. More voices and macros come in Phase 2. Star or watch the repo to follow progress, or open an issue to help shape it.
+> **Status: Phase 2 in progress.** You can play it live from Claude (or any MCP client): one drone voice, two mood macros (`darkness`, `instability`), a standing pace for transitions, smooth gestures with no clicks or jumps. More voices and macros are coming in Phase 2. Star or watch the repo to follow progress, or open an issue to help shape it.
 
 ---
 

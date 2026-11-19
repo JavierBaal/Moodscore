@@ -27,7 +27,9 @@ The milestone that decides whether the idea works:
 
 Sound:
 - Six drone voices and two melodic voices
-- All six mood macros with data-driven mappings, starting with `instability` and `tension`
+- All six mood macros with data-driven mappings
+  - [x] `instability` (pitch drift and detune)
+  - [ ] `tension`: needs the six-voice DSP (dissonance, suspensions) and macros that can share a parameter with `darkness`
 
 Harmony:
 - The six drone voices form a chord; the agent sets a harmonic plan (key, mode, progression with durations) and the engine walks it, voices gliding or crossfading between chords
@@ -35,7 +37,7 @@ Harmony:
 - `tension` can add dissonance (suspensions, added ninths, clusters); pedal points come for free
 
 Pace and time:
-- `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it
+- [x] `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it
 - Tempo clock with tempo gestures: accelerando and ritardando glide like everything else, never jump
 - Tempo-synced modulation: LFOs, filter pulsing, delays
 

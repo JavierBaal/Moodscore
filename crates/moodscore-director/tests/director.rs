@@ -185,3 +185,59 @@ fn invalid_mappings_are_rejected() {
         "b":{"default":0.5,"targets":[{"param":"master/gain","from":0,"to":1}]}}}"#;
     assert!(mapping::load(twice, &p).is_err());
 }
+
+#[test]
+fn instability_moves_drift_and_detune_but_not_darkness() {
+    let mut d = director();
+    let cutoff_before = value(&d, "filter/cutoff");
+    d.morph(0.0, &[("instability", 1.0)], 5.0, Curve::Linear)
+        .unwrap();
+    d.tick(5.0);
+    assert!((value(&d, "drone_1/drift") - 1.0).abs() < 1e-4);
+    assert!((value(&d, "drone_1/detune") - 22.0).abs() < 1e-3);
+    assert_eq!(value(&d, "filter/cutoff"), cutoff_before);
+
+    let state = d.state(5.0);
+    let detune = state
+        .params
+        .iter()
+        .find(|p| p.path == "drone_1/detune")
+        .unwrap();
+    assert_eq!(detune.owner, "macro:instability");
+}
+
+#[test]
+fn pace_defaults_and_partial_updates() {
+    let mut d = director();
+    assert_eq!(d.pace().over, 10.0);
+    assert_eq!(d.pace().curve, Curve::EaseInOut);
+
+    let p = d.set_pace(Some(45.0), None).unwrap();
+    assert_eq!((p.over, p.curve), (45.0, Curve::EaseInOut));
+    let p = d.set_pace(None, Some(Curve::Linear)).unwrap();
+    assert_eq!((p.over, p.curve), (45.0, Curve::Linear));
+    // "short and direct": zero is allowed and means the shortest safe glide
+    assert_eq!(d.set_pace(Some(0.0), None).unwrap().over, 0.0);
+}
+
+#[test]
+fn bad_pace_is_rejected_and_changes_nothing() {
+    let mut d = director();
+    assert!(matches!(
+        d.set_pace(None, None),
+        Err(DirectorError::Invalid(_))
+    ));
+    assert!(d.set_pace(Some(-1.0), Some(Curve::Linear)).is_err());
+    assert!(d.set_pace(Some(f32::NAN), None).is_err());
+    assert!(d.set_pace(Some(10_000.0), None).is_err());
+    assert_eq!(d.pace().over, 10.0);
+    assert_eq!(d.pace().curve, Curve::EaseInOut);
+}
+
+#[test]
+fn state_reports_pace() {
+    let mut d = director();
+    d.set_pace(Some(30.0), Some(Curve::EaseIn)).unwrap();
+    let json = serde_json::to_string(&d.state(0.0)).unwrap();
+    assert!(json.contains("\"pace\":{\"over\":30.0,\"curve\":\"ease_in\"}"));
+}
