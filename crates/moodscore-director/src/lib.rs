@@ -22,6 +22,7 @@
 //! [`Conductor`] runs it on a control thread against a live engine.
 
 pub mod curve;
+pub mod harmony;
 pub mod mapping;
 
 use std::fmt;
@@ -192,6 +193,8 @@ enum Owner {
     /// Driven by the macros in `ParamLane::mapped_by`.
     Macros,
     Manual,
+    /// A voice pitch driven by the harmonic plan (moves on `manual`).
+    Harmony,
 }
 
 /// Glide from a manual value back to a macro's control.
@@ -214,6 +217,8 @@ struct ParamLane {
     max: f32,
     out: f32,
     log: bool,
+    /// Set by hand with `gesture` (as opposed to never touched).
+    hand_set: bool,
 }
 
 impl ParamLane {
@@ -234,12 +239,72 @@ impl ParamLane {
 }
 
 /// The pure gesture engine. Time is passed in, in seconds.
+#[derive(Clone)]
 pub struct Director {
     params: Vec<ParamInfo>,
     macros: Vec<MacroDef>,
     macro_lanes: Vec<Lane>,
     lanes: Vec<ParamLane>,
     pace: Pace,
+    /// Parameter ids of each voice's pitch: drone_1/pitch, drone_2/pitch, …
+    voice_pitches: Vec<usize>,
+    harmony: Option<HarmonyRun>,
+}
+
+/// A harmonic plan: a key and a progression the director walks through.
+#[derive(Clone, Debug)]
+pub struct HarmonyPlan {
+    pub key: harmony::Key,
+    /// Each chord with how long it lasts, in seconds.
+    pub progression: Vec<(harmony::Chord, f32)>,
+    pub looping: bool,
+    /// A note held in the bass under every chord.
+    pub pedal: Option<harmony::Note>,
+    /// Seconds each voice takes to glide to its next note.
+    pub glide: f32,
+    pub curve: Curve,
+}
+
+impl HarmonyPlan {
+    fn total(&self) -> f64 {
+        self.progression.iter().map(|(_, s)| *s as f64).sum()
+    }
+
+    /// Which chord sounds `elapsed` seconds in, counting loops (so the same
+    /// chord on the next lap is a new step); seconds since that chord began;
+    /// and seconds until the next one (infinite once a non-looping plan ends).
+    fn step_at(&self, elapsed: f64) -> (usize, f64, f64) {
+        let total = self.total();
+        let n = self.progression.len();
+        let elapsed = elapsed.max(0.0);
+        let (lap, mut t) = if self.looping {
+            (
+                (elapsed / total).floor() as usize,
+                elapsed.rem_euclid(total),
+            )
+        } else if elapsed >= total {
+            let last = self.progression[n - 1].1 as f64;
+            return (n - 1, elapsed - (total - last), f64::INFINITY);
+        } else {
+            (0, elapsed)
+        };
+        for (i, (_, secs)) in self.progression.iter().enumerate() {
+            let secs = *secs as f64;
+            if t < secs {
+                return (lap * n + i, t, secs - t);
+            }
+            t -= secs;
+        }
+        (lap * n + n - 1, 0.0, 0.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HarmonyRun {
+    plan: HarmonyPlan,
+    start: f64,
+    /// The step last voiced.
+    applied: Option<usize>,
 }
 
 impl Director {
@@ -260,6 +325,7 @@ impl Director {
                     max: p.max,
                     out: p.init,
                     log,
+                    hand_set: false,
                 }
             })
             .collect();
@@ -283,7 +349,16 @@ impl Director {
             macro_lanes,
             lanes,
             pace: Pace::default(),
+            voice_pitches: Vec::new(),
+            harmony: None,
         };
+        d.voice_pitches = (1..)
+            .map_while(|v| {
+                d.params
+                    .iter()
+                    .position(|p| p.path == format!("drone_{v}/pitch"))
+            })
+            .collect();
         d.tick(0.0);
         d
     }
@@ -441,12 +516,115 @@ impl Director {
             lane.owner = Owner::Manual;
             lane.reclaim = None;
         }
+        lane.hand_set = true;
         lane.manual.start(now, to, start_in, duration, curve);
         Ok(())
     }
 
+    /// Start walking a harmonic plan, from its first chord, now. Voice
+    /// pitches nobody has set by hand follow the harmony; hand-set ones stay
+    /// where they are unless `reclaim`. Replaces any plan already running.
+    pub fn harmony(
+        &mut self,
+        now: f64,
+        plan: HarmonyPlan,
+        reclaim: bool,
+    ) -> Result<(), DirectorError> {
+        if self.voice_pitches.is_empty() {
+            return Err(DirectorError::Invalid(
+                "this instrument has no drone voices to harmonise".into(),
+            ));
+        }
+        if plan.progression.is_empty() {
+            return Err(DirectorError::Invalid(
+                "the progression needs at least one chord".into(),
+            ));
+        }
+        for &id in &self.voice_pitches {
+            let lane = &mut self.lanes[id];
+            let free = lane.owner == Owner::Manual && !lane.hand_set;
+            if lane.owner == Owner::Harmony || free || reclaim {
+                if lane.owner != Owner::Harmony {
+                    lane.manual = Lane::new(lane.out, lane.log);
+                    lane.reclaim = None;
+                }
+                lane.owner = Owner::Harmony;
+                lane.hand_set = false;
+            }
+        }
+        self.harmony = Some(HarmonyRun {
+            plan,
+            start: now,
+            applied: None,
+        });
+        self.advance_harmony(now);
+        Ok(())
+    }
+
+    /// Stop walking the harmony. Voices stay on the notes they have (or are
+    /// gliding to) and become free for `gesture` or a later plan.
+    pub fn stop_harmony(&mut self) {
+        self.harmony = None;
+        for &id in &self.voice_pitches {
+            let lane = &mut self.lanes[id];
+            if lane.owner == Owner::Harmony {
+                lane.owner = Owner::Manual;
+                lane.hand_set = false;
+            }
+        }
+    }
+
+    /// Voice the chord that should be sounding at `now`, if it changed.
+    fn advance_harmony(&mut self, now: f64) {
+        let Some(run) = &self.harmony else { return };
+        let (step, since, _) = run.plan.step_at(now - run.start);
+        if run.applied == Some(step) {
+            return;
+        }
+        // Start the change when the chord was due, not when we noticed: the
+        // control loop runs at a fixed rate, and offline renders may jump.
+        let at = now - since;
+        let idx = step % run.plan.progression.len();
+        let chord = run.plan.progression[idx].0.clone();
+        let (pedal, glide, curve) = (run.plan.pedal, run.plan.glide, run.plan.curve);
+
+        let owned: Vec<usize> = self
+            .voice_pitches
+            .iter()
+            .copied()
+            .filter(|&id| self.lanes[id].owner == Owner::Harmony)
+            .collect();
+        let bass_id = self.voice_pitches[0];
+        let bass_from = owned
+            .contains(&bass_id)
+            .then(|| harmony::hz_to_midi(self.lanes[bass_id].manual.target()));
+        let upper_ids: Vec<usize> = owned.iter().copied().filter(|&id| id != bass_id).collect();
+        // Voice-lead from where each voice is heading, so a chord change in
+        // the middle of a glide still moves the least.
+        let upper_from: Vec<f32> = upper_ids
+            .iter()
+            .map(|&id| harmony::hz_to_midi(self.lanes[id].manual.target()))
+            .collect();
+        let v = harmony::voice(&chord, pedal, bass_from, &upper_from);
+
+        let duration = glide.max(MIN_DURATION);
+        let mut moves: Vec<(usize, f32)> = upper_ids.into_iter().zip(v.upper).collect();
+        if let Some(b) = v.bass {
+            moves.push((bass_id, b));
+        }
+        for (id, midi) in moves {
+            let p = &self.params[id];
+            let hz = harmony::midi_to_hz(midi).clamp(p.min, p.max);
+            self.lanes[id].manual.start(at, hz, 0.0, duration, curve);
+        }
+        if let Some(run) = &mut self.harmony {
+            run.applied = Some(step);
+        }
+    }
+
     /// Advance to `now`. Read the result with [`values`](Self::values).
     pub fn tick(&mut self, now: f64) {
+        self.advance_harmony(now);
         let macro_values: Vec<f32> = self.macro_lanes.iter().map(|l| l.at(now)).collect();
         for l in &mut self.macro_lanes {
             l.settle(now);
@@ -454,7 +632,7 @@ impl Director {
 
         for lane in &mut self.lanes {
             lane.out = match lane.owner {
-                Owner::Manual => {
+                Owner::Manual | Owner::Harmony => {
                     let v = lane.manual.at(now);
                     lane.manual.settle(now);
                     v
@@ -501,10 +679,16 @@ impl Director {
             .params
             .iter()
             .zip(&self.lanes)
-            .map(|(p, lane)| {
+            .enumerate()
+            .map(|(id, (p, lane))| {
                 let (owner, target, remaining) = match lane.owner {
                     Owner::Manual => (
                         "manual".to_string(),
+                        lane.manual.target(),
+                        lane.manual.remaining(now),
+                    ),
+                    Owner::Harmony => (
+                        "harmony".to_string(),
                         lane.manual.target(),
                         lane.manual.remaining(now),
                     ),
@@ -530,10 +714,15 @@ impl Director {
                     }
                 };
                 let held_from = if lane.owner == Owner::Manual {
-                    lane.mapped_by
+                    let mut from: Vec<String> = lane
+                        .mapped_by
                         .iter()
                         .map(|&(mi, _)| self.macros[mi].name.clone())
-                        .collect()
+                        .collect();
+                    if lane.hand_set && self.harmony.is_some() && self.voice_pitches.contains(&id) {
+                        from.push("harmony".into());
+                    }
+                    from
                 } else {
                     Vec::new()
                 };
@@ -553,9 +742,42 @@ impl Director {
 
         State {
             pace: self.pace,
+            harmony: self.harmony_state(now),
             macros,
             params,
         }
+    }
+
+    fn harmony_state(&self, now: f64) -> Option<HarmonyState> {
+        let run = self.harmony.as_ref()?;
+        let plan = &run.plan;
+        let n = plan.progression.len();
+        let (step, _, left) = plan.step_at(now - run.start);
+        let idx = step % n;
+        let chord = &plan.progression[idx].0;
+        let finished = !plan.looping && left.is_infinite();
+        let next = if finished || (!plan.looping && idx + 1 == n) {
+            None
+        } else {
+            Some(&plan.progression[(idx + 1) % n].0)
+        };
+        Some(HarmonyState {
+            key: format!("{} {}", plan.key.name(plan.key.tonic), plan.key.mode),
+            chord: ChordState {
+                symbol: chord.symbol.clone(),
+                name: chord.name.clone(),
+                notes: chord.note_names(),
+            },
+            next: next.map(|c| ChordState {
+                symbol: c.symbol.clone(),
+                name: c.name.clone(),
+                notes: c.note_names(),
+            }),
+            seconds_to_next: next.map(|_| round(left as f32)),
+            position: format!("{}/{}", idx + 1, n),
+            looping: plan.looping,
+            pedal: plan.pedal.map(|p| plan.key.name(p.pitch_class).to_string()),
+        })
     }
 }
 
@@ -576,8 +798,38 @@ fn round(x: f32) -> f32 {
 pub struct State {
     /// Default duration and curve for calls that don't give their own.
     pub pace: Pace,
+    /// The harmonic plan being walked, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harmony: Option<HarmonyState>,
     pub macros: Vec<MacroState>,
     pub params: Vec<ParamState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct HarmonyState {
+    /// e.g. "A aeolian".
+    pub key: String,
+    pub chord: ChordState,
+    /// The chord coming next, unless the plan has ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<ChordState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds_to_next: Option<f32>,
+    /// Which chord of the progression, e.g. "2/4".
+    pub position: String,
+    #[serde(rename = "loop")]
+    pub looping: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pedal: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChordState {
+    /// As written in the plan: "VI".
+    pub symbol: String,
+    /// Readable name: "F".
+    pub name: String,
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -723,6 +975,15 @@ impl Conductor {
 
     pub fn pace(&self) -> Pace {
         self.lock().pace()
+    }
+
+    pub fn harmony(&self, plan: HarmonyPlan, reclaim: bool) -> Result<(), DirectorError> {
+        let now = self.now();
+        self.lock().harmony(now, plan, reclaim)
+    }
+
+    pub fn stop_harmony(&self) {
+        self.lock().stop_harmony()
     }
 
     pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {

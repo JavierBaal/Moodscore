@@ -7,7 +7,8 @@
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
 
-use moodscore_director::{Conductor, Curve};
+use moodscore_director::harmony::{parse_note, Chord, Key};
+use moodscore_director::{Conductor, Curve, HarmonyPlan};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -39,6 +40,12 @@ fifth) sound. drone_3 to drone_6 wait silent (level 0) on A2, C3, E3 and A3, \
 an open A minor chord. Bring a voice in or out by gliding drone_N/level with \
 `gesture`; retune it with drone_N/pitch (Hz). Building a sound up voice by \
 voice is how it grows bigger or more epic; thinning it out is how it empties.
+- `harmony` makes the voices play chords: give a key, a mode and a \
+progression of Roman-numeral chords with durations, and the engine walks it \
+on its own, looping, each voice gliding to the nearest note of the next chord. \
+Use it when the person asks for harmony, chords, a progression, a key or a \
+change of colour; then bring voices in with drone_N/level so the chord is \
+heard. A voice you retune by hand leaves the harmony until reclaim.
 - `release` and `start` accept start_in to delay the fade, e.g. to let an \
 unstable outro peak at full volume before it dies away.
 - If the person sets a general pace (\"everything slow today\", \"short and \
@@ -94,6 +101,40 @@ pub struct GestureArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetStateArgs {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ChordStep {
+    /// Roman numeral in the key: upper case major, lower case minor (i, VI, V, bVII). Add ° dim, + aug, ø half-dim; colour with 7, maj7, sus2, sus4, add9 (e.g. iv7, Vsus4, iadd9).
+    pub chord: String,
+    /// How long this chord lasts, in seconds.
+    pub seconds: f32,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HarmonyArgs {
+    /// Tonic, e.g. "A", "F#", "Bb". Required unless stop is true.
+    pub key: Option<String>,
+    /// ionian, dorian, phrygian, lydian, mixolydian, aeolian, locrian (or major, minor). Default aeolian.
+    pub mode: Option<String>,
+    /// The chords in order, each with its duration. Required unless stop is true.
+    pub progression: Option<Vec<ChordStep>>,
+    /// Repeat the progression. Default true. If false, the last chord holds.
+    #[serde(rename = "loop")]
+    pub looping: Option<bool>,
+    /// A note held in the bass under every chord, e.g. "A" or "E1". Default: the bass follows each chord's root.
+    pub pedal: Option<String>,
+    /// Seconds each voice takes to slide to its next note. Default 3.
+    pub glide: Option<f32>,
+    /// Shape of the slides: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default ease_in_out.
+    pub curve: Option<String>,
+    /// Also take over voices whose pitch was set by hand with gesture. Default false.
+    pub reclaim: Option<bool>,
+    /// Stop walking the harmony: voices stay on their current notes and become free. Other fields are ignored.
+    pub stop: Option<bool>,
+}
+
+const DEFAULT_GLIDE: f32 = 3.0;
+const MAX_CHORDS: usize = 64;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPaceArgs {
@@ -267,6 +308,73 @@ impl MoodscoreServer {
         let start_in = args.start_in.unwrap_or(0.0);
         self.conductor
             .gesture(&args.param, args.to, over, curve, start_in)
+            .map_err(|e| e.to_string())?;
+        Ok(self.report(Detail::Brief))
+    }
+
+    #[tool(
+        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. A new plan starts now from its first chord, voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
+    )]
+    fn harmony(&self, Parameters(args): Parameters<HarmonyArgs>) -> Result<String, String> {
+        if args.stop.unwrap_or(false) {
+            self.conductor.stop_harmony();
+            return Ok(self.report(Detail::Brief));
+        }
+        let key_name = args
+            .key
+            .ok_or("harmony needs a key (e.g. \"A\"), or stop: true")?;
+        let key = Key::new(&key_name, args.mode.as_deref().unwrap_or("aeolian"))
+            .map_err(|e| e.to_string())?;
+        let steps = args
+            .progression
+            .filter(|p| !p.is_empty())
+            .ok_or("harmony needs a progression with at least one chord")?;
+        if steps.len() > MAX_CHORDS {
+            return Err(format!(
+                "a progression can have at most {MAX_CHORDS} chords"
+            ));
+        }
+        let mut progression = Vec::with_capacity(steps.len());
+        for (i, step) in steps.iter().enumerate() {
+            let chord =
+                Chord::parse(&step.chord, &key).map_err(|e| format!("chord {}: {e}", i + 1))?;
+            if !step.seconds.is_finite() || !(0.5..=600.0).contains(&step.seconds) {
+                return Err(format!(
+                    "chord {} ({}): seconds must be between 0.5 and 600",
+                    i + 1,
+                    step.chord
+                ));
+            }
+            progression.push((chord, step.seconds));
+        }
+        let pedal = args
+            .pedal
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .map(parse_note)
+            .transpose()
+            .map_err(|e| format!("pedal: {e}"))?;
+        if let Some(midi) = pedal.and_then(|p| p.midi) {
+            let (lo, hi) = moodscore_director::harmony::BASS_RANGE;
+            if !(lo..=hi).contains(&(midi as f32)) {
+                return Err("pedal: give the note without an octave, or between E1 and E2".into());
+            }
+        }
+        let glide = args.glide.unwrap_or(DEFAULT_GLIDE);
+        if !glide.is_finite() || !(0.0..=600.0).contains(&glide) {
+            return Err("glide must be between 0 and 600 seconds".into());
+        }
+        let curve = curve_or(args.curve.as_deref(), Curve::EaseInOut)?;
+        let plan = HarmonyPlan {
+            key,
+            progression,
+            looping: args.looping.unwrap_or(true),
+            pedal,
+            glide,
+            curve,
+        };
+        self.conductor
+            .harmony(plan, args.reclaim.unwrap_or(false))
             .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
     }

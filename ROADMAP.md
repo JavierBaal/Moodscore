@@ -34,9 +34,16 @@ Sound:
   - [ ] `tension`: dissonance and suspensions come with `harmony`; until then it would only be resonance and beating
 
 Harmony:
-- The six drone voices form a chord; the agent sets a harmonic plan (key, mode, progression with durations) and the engine walks it, voices gliding or crossfading between chords
-- Mode as colour: e.g. aeolian for dark, lydian for luminous, phrygian for ominous
-- `tension` can add dissonance (suspensions, added ninths, clusters); pedal points come for free
+- [x] The six drone voices form a chord; the agent sets a harmonic plan (key, mode, Roman-numeral progression with durations in seconds, loop, pedal) and the engine walks it, voices gliding to the nearest chord tone
+- [x] Mode as colour: all seven modes; borrowed and altered chords; 7, maj7, sus2, sus4, add9
+- [ ] Crossfading between chords (needs spare voices)
+- [ ] `tension` adds dissonance (suspensions, added ninths, clusters) on top of the harmony
+
+Arpeggios and ostinatos (planned with Fran on 19 Nov; needs the tempo clock and a note voice):
+- One note voice with an envelope (from plucked to pad): the first of the two melodic voices, brought forward
+- Step sequencer, 1–16 steps, sample-accurate in the audio thread
+- Arpeggios over the chord that is sounding (up, down, up-down, random; octaves; rate), following the harmony
+- Ostinatos: a short motif that either follows the harmony (transposed with each chord) or stays fixed while the harmony moves under it
 
 Pace and time:
 - [x] `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it

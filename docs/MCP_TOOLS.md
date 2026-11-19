@@ -47,29 +47,39 @@ Set the standing default for how long moves take and their shape, for every `mor
 
 Both fields are optional, but at least one is required; an omitted field keeps its current value. `over: 0` means "as fast as is musically safe". Moves already under way keep their timing. The current pace is reported by every tool under `pace`.
 
-## Harmony (planned, Phase 2)
+## Harmony ✅ Phase 2
 
-### `harmony`
+### `harmony` ✅
 
-Set a harmonic plan. The engine walks the progression, voice-leading smoothly between chords.
+Set a harmonic plan. The six drone voices walk the progression on their own, each voice gliding to the nearest note of the next chord (smooth voice leading, like a string section).
 
 ```json
 {
-  "key": "E",
+  "key": "A",
   "mode": "aeolian",
   "progression": [
-    { "chord": "i",   "bars": 4 },
-    { "chord": "VI",  "bars": 4 },
-    { "chord": "III", "bars": 4 },
-    { "chord": "VII", "bars": 4 }
+    { "chord": "i",   "seconds": 20 },
+    { "chord": "VI",  "seconds": 20 },
+    { "chord": "III", "seconds": 20 },
+    { "chord": "VII", "seconds": 20 }
   ],
   "loop": true,
-  "pedal": "E1",
-  "transition": "glide"
+  "pedal": "A",
+  "glide": 4
 }
 ```
 
-Durations may also be given in seconds when no tempo is running.
+- **`key`**: tonic (`A`, `F#`, `Bb`). **`mode`**: `ionian`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `aeolian` (default), `locrian`, or `major` / `minor`. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous, mixolydian open and heroic, locrian unstable.
+- **Chords** are Roman numerals in the key. Case is quality: upper case major, lower case minor, so `V` in a minor key is the borrowed major V. `b`/`#` before the numeral alters the root (`bVI`, `bVII`). `°` (or `o`, `dim`) diminished, `+` (or `aug`) augmented, `ø` half-diminished. Colour, in any order after the numeral: `7` (the mode's seventh), `maj7`, `sus2`, `sus4`, `add9` (the mode's ninth). Notes are spelled properly by letter (`iv` in C major is F A♭ C).
+- **Durations** in `seconds` per chord (0.5–600). Bars come with the tempo clock.
+- **`loop`** (default true). Without it, the last chord holds.
+- **`pedal`**: a note held in the bass under every chord (`A`, or `E1`…`E2` with an octave). Without it the bass voice (`drone_1`) follows each chord's root.
+- **`glide`**: seconds each voice takes to reach its next note (default 3); **`curve`** shapes it.
+- Voicing: `drone_1` is the bass (E1–E2), `drone_2`…`drone_6` share the chord (E2–A4). Every chord tone is covered when there are enough voices (dropping the fifth first when there aren't); extra voices double the root or fifth, or whatever moves least.
+- Harmony moves pitches only, never levels: the chord sounds through whichever voices are up (bring them in with `gesture` on `drone_N/level`).
+- **Ownership**: harmony takes every voice pitch nobody has set by hand. A pitch retuned with `gesture` leaves the harmony and stays put (`get_state` shows it as `manual` with `held_from: ["harmony"]`) until a `harmony` call with `"reclaim": true`.
+- A new call replaces the plan and starts now from its first chord, voice-leading from wherever the voices are, so changing key or mode mid-piece is just another call. `{ "stop": true }` stops walking: voices stay on their notes and become free.
+- The state reports `harmony`: key, the chord sounding (`symbol`, `name`, `notes`), the `next` chord, `seconds_to_next`, `position` (e.g. `"2/4"`), `loop` and `pedal`.
 
 ## Melody (planned, Phase 3)
 

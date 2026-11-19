@@ -347,3 +347,159 @@ fn mapping_rules_for_add_and_wildcards() {
         {"param":"filter/resonance","from":0,"to":0.5,"mdoe":"add"}]}}}"#;
     assert!(mapping::load(typo, &p).is_err());
 }
+
+// ---------------------------------------------------------------- harmony
+
+use moodscore_director::harmony::{hz_to_midi, parse_note, Chord, Key};
+use moodscore_director::HarmonyPlan;
+
+fn plan(key: &str, mode: &str, chords: &[(&str, f32)], looping: bool) -> HarmonyPlan {
+    let k = Key::new(key, mode).unwrap();
+    HarmonyPlan {
+        progression: chords
+            .iter()
+            .map(|(c, s)| (Chord::parse(c, &k).unwrap(), *s))
+            .collect(),
+        key: k,
+        looping,
+        pedal: None,
+        glide: 2.0,
+        curve: Curve::EaseInOut,
+    }
+}
+
+/// Pitch classes sounding on the voices (MIDI rounded), bass first.
+fn pitch_classes(d: &Director) -> Vec<u8> {
+    (1..=6)
+        .map(|v| (hz_to_midi(value(d, &format!("drone_{v}/pitch"))).round() as i32 % 12) as u8)
+        .collect()
+}
+
+#[test]
+fn harmony_walks_the_progression_and_loops() {
+    let mut d = director();
+    d.harmony(
+        0.0,
+        plan("A", "aeolian", &[("i", 10.0), ("VI", 10.0)], true),
+        false,
+    )
+    .unwrap();
+    d.tick(5.0);
+    let s = d.state(5.0);
+    let h = s.harmony.as_ref().unwrap();
+    assert_eq!(h.chord.name, "Am");
+    assert_eq!(h.next.as_ref().unwrap().name, "F");
+    assert!((h.seconds_to_next.unwrap() - 5.0).abs() < 1e-3);
+
+    d.tick(13.0); // VI started at 10 s, 2 s glide: arrived
+    let mut pcs = pitch_classes(&d);
+    assert_eq!(pcs[0], 5, "bass on F");
+    pcs.sort();
+    pcs.dedup();
+    assert_eq!(pcs, vec![0, 5, 9], "F A C");
+
+    d.tick(23.0); // looped back to i
+    let mut pcs = pitch_classes(&d);
+    assert_eq!(pcs[0], 9, "bass back on A");
+    pcs.sort();
+    pcs.dedup();
+    assert_eq!(pcs, vec![0, 4, 9], "A C E");
+    assert_eq!(d.state(23.0).harmony.unwrap().position, "1/2");
+}
+
+#[test]
+fn chord_changes_glide_without_jumps() {
+    let mut d = director();
+    d.harmony(
+        0.0,
+        plan("A", "aeolian", &[("i", 4.0), ("VII", 4.0)], true),
+        false,
+    )
+    .unwrap();
+    for v in 1..=6 {
+        let path = format!("drone_{v}/pitch");
+        let t = trace(&mut d.clone(), &path, 0.0, 12.0, 0.005);
+        let worst = t
+            .windows(2)
+            .map(|w| (w[1] / w[0]).ln().abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 0.01, "{path} jumped (step ratio {worst})");
+    }
+}
+
+#[test]
+fn a_plan_that_does_not_loop_holds_its_last_chord() {
+    let mut d = director();
+    d.harmony(
+        0.0,
+        plan("C", "major", &[("I", 3.0), ("IV", 3.0)], false),
+        false,
+    )
+    .unwrap();
+    d.tick(60.0);
+    let s = d.state(60.0);
+    let h = s.harmony.unwrap();
+    assert_eq!(h.chord.name, "F");
+    assert!(h.next.is_none() && h.seconds_to_next.is_none());
+    assert_eq!(pitch_classes(&d)[0], 5);
+}
+
+#[test]
+fn harmony_respects_a_hand_tuned_voice_until_reclaimed() {
+    let mut d = director();
+    d.gesture(0.0, "drone_6/pitch", 300.0, 0.0, Curve::Linear, 0.0)
+        .unwrap();
+    d.harmony(1.0, plan("A", "aeolian", &[("VI", 30.0)], true), false)
+        .unwrap();
+    d.tick(5.0);
+    assert!((value(&d, "drone_6/pitch") - 300.0).abs() < 1e-3);
+    let s = d.state(5.0);
+    let p6 = s.params.iter().find(|p| p.path == "drone_6/pitch").unwrap();
+    assert_eq!(p6.owner, "manual");
+    assert_eq!(p6.held_from, vec!["harmony".to_string()]);
+    let p5 = s.params.iter().find(|p| p.path == "drone_5/pitch").unwrap();
+    assert_eq!(p5.owner, "harmony");
+
+    d.harmony(5.0, plan("A", "aeolian", &[("VI", 30.0)], true), true)
+        .unwrap();
+    d.tick(8.0);
+    let pc6 = (hz_to_midi(value(&d, "drone_6/pitch")).round() as i32 % 12) as u8;
+    assert!([0, 5, 9].contains(&pc6), "reclaimed voice joins the chord");
+}
+
+#[test]
+fn a_pedal_holds_the_bass_and_stop_frees_the_voices() {
+    let mut d = director();
+    let mut p = plan(
+        "A",
+        "aeolian",
+        &[("i", 5.0), ("VI", 5.0), ("VII", 5.0)],
+        true,
+    );
+    p.pedal = Some(parse_note("A").unwrap());
+    d.harmony(0.0, p, false).unwrap();
+    for t in [3.0, 8.0, 13.0] {
+        d.tick(t);
+        assert!(
+            (value(&d, "drone_1/pitch") - 55.0).abs() < 0.01,
+            "bass at {t}s"
+        );
+    }
+    d.stop_harmony();
+    let before = value(&d, "drone_3/pitch");
+    d.tick(40.0);
+    assert!(
+        (value(&d, "drone_3/pitch") - before).abs() < 1e-3,
+        "voices stay put"
+    );
+    let s = d.state(40.0);
+    assert!(s.harmony.is_none());
+    assert!(s
+        .params
+        .iter()
+        .filter(|p| p.path.ends_with("/pitch"))
+        .all(|p| p.owner == "manual"));
+    // and a gesture works on them as usual
+    d.gesture(40.0, "drone_3/pitch", 100.0, 0.0, Curve::Linear, 0.0)
+        .unwrap();
+}

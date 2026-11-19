@@ -72,7 +72,7 @@ send("notifications/initialized", notify=True)
 tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
-    tools == {"start", "release", "morph", "gesture", "set_pace", "get_state"},
+    tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "get_state"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -161,6 +161,36 @@ call("morph", {"darkness": 0.1, "over": 0, "reclaim": True})
 time.sleep(0.3)
 reverb = next(p for p in json.loads(call("get_state", {})[1])["params"] if p["path"] == "space/reverb_mix")
 check(reverb["owner"] == "macro:darkness" and "held_from" not in reverb, "reclaim: true takes it back")
+
+import math
+
+def pcs():
+    st = json.loads(call("get_state", {})[1])
+    hz = [next(p["value"] for p in st["params"] if p["path"] == f"drone_{v}/pitch") for v in range(1, 7)]
+    return [round(69 + 12 * math.log2(h / 440)) % 12 for h in hz], st
+
+# drone_1/pitch was tuned by hand above: without reclaim the bass would stay put
+err, text = call("harmony", {
+    "key": "A", "mode": "aeolian", "glide": 0.3, "reclaim": True,
+    "progression": [{"chord": "i", "seconds": 1.5}, {"chord": "VI", "seconds": 1.5}],
+})
+h = json.loads(text).get("harmony", {}) if not err else {}
+check(not err and h.get("chord", {}).get("name") == "Am" and h.get("next", {}).get("name") == "F",
+      f"harmony starts on Am, F next ({text[:80] if err else h.get('position')})")
+time.sleep(2.2)
+p, st = pcs()
+check(p[0] == 5 and sorted(set(p)) == [0, 5, 9], f"voices play F major after the change ({p})")
+check(all(q["owner"] == "harmony" for q in st["params"] if q["path"].endswith("/pitch")), "voice pitches owned by harmony")
+time.sleep(1.5)
+p, _ = pcs()
+check(p[0] == 9 and sorted(set(p)) == [0, 4, 9], f"loops back to A minor ({p})")
+
+err, text = call("harmony", {"key": "A", "progression": [{"chord": "Vi", "seconds": 4}]})
+check(err and "upper case" in text, f"bad chord explained: {text[:70]}")
+err, text = call("harmony", {"key": "A", "mode": "spooky", "progression": [{"chord": "i", "seconds": 4}]})
+check(err and "lydian" in text, "bad mode explained")
+err, text = call("harmony", {"stop": True})
+check(not err and "harmony" not in json.loads(text), "harmony stops")
 
 err, text = call("release", {"over": 1, "start_in": 30})
 out = json.loads(text)["output"]

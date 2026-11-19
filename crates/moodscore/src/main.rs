@@ -175,6 +175,32 @@ fn serve(macros_file: Option<&str>, no_audio: bool) -> Result<()> {
     result
 }
 
+/// The demo's harmony: i, VI, III, VII in A aeolian, one chord per quarter
+/// of the performance, with three more voices joining in.
+fn demo_harmony(seconds: f32) -> Result<moodscore_director::HarmonyPlan> {
+    use moodscore_director::harmony::{Chord, Key};
+    let key = Key::new("A", "aeolian")?;
+    let progression = ["i", "VI", "III", "VII"]
+        .into_iter()
+        .map(|c| Ok((Chord::parse(c, &key)?, seconds / 4.0)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(moodscore_director::HarmonyPlan {
+        key,
+        progression,
+        looping: false,
+        pedal: None,
+        glide: (seconds / 16.0).min(4.0),
+        curve: Curve::EaseInOut,
+    })
+}
+
+/// Voices that join the demo, and the level they rise to.
+const DEMO_VOICES: [(&str, f32); 3] = [
+    ("drone_3/level", 0.45),
+    ("drone_4/level", 0.3),
+    ("drone_5/level", 0.35),
+];
+
 /// A scripted performance: darken slowly, then open up again.
 const SCRIPT: [(f32, f32, f32, Curve); 3] = [
     // (start at fraction of total, darkness, over fraction of total, curve)
@@ -186,8 +212,18 @@ const SCRIPT: [(f32, f32, f32, Curve); 3] = [
 fn play(seconds: f32, macros_file: Option<&str>) -> Result<()> {
     let (conductor, _output) = start_live(macros_file, false)?;
     eprintln!(
-        "moodscore: demo for {seconds:.0} s: darker, slowly, then opening up. Ctrl+C to stop."
+        "moodscore: demo for {seconds:.0} s: A minor, i VI III VII, darker, slowly, then opening up. Ctrl+C to stop."
     );
+    conductor.harmony(demo_harmony(seconds)?, false)?;
+    for (i, (path, level)) in DEMO_VOICES.iter().enumerate() {
+        conductor.gesture(
+            path,
+            *level,
+            seconds * 0.2,
+            Curve::EaseInOut,
+            seconds * 0.05 * i as f32,
+        )?;
+    }
     let mut next = 0;
     let mut last_report = -10.0;
     while conductor.now() < seconds as f64 {
@@ -248,6 +284,17 @@ fn render(path: &str, seconds: f32, macros_file: Option<&str>) -> Result<()> {
     let mut r = vec![0.0f32; control_frames];
     let mut written = 0;
     let mut next = 0;
+    director.harmony(0.0, demo_harmony(seconds)?, false)?;
+    for (i, (path, level)) in DEMO_VOICES.iter().enumerate() {
+        director.gesture(
+            0.0,
+            path,
+            *level,
+            seconds * 0.2,
+            Curve::EaseInOut,
+            seconds * 0.05 * i as f32,
+        )?;
+    }
     while written < total {
         let now = written as f64 / sr as f64;
         let t = now as f32 / seconds;
