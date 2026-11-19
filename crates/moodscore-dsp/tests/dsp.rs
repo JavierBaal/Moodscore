@@ -35,6 +35,8 @@ fn exposes_expected_parameters() {
         "drone_1/sub",
         "drone_1/drift",
         "drone_1/level",
+        "drone_6/pitch",
+        "drone_6/level",
         "filter/cutoff",
         "filter/resonance",
         "space/reverb_mix",
@@ -91,4 +93,39 @@ fn set_clamps_to_range_and_ignores_garbage() {
     dsp.set(gain, f32::NAN);
     assert!(dsp.get(gain).unwrap().is_finite());
     dsp.set(9_999, 1.0); // unknown id: no panic
+}
+
+#[test]
+fn six_voices_together_grow_louder_but_stay_in_range() {
+    let mut two = Dsp::new(SR);
+    let mut six = Dsp::new(SR);
+    for v in 1..=6 {
+        let id = six.param_id(&format!("drone_{v}/level")).unwrap();
+        six.set(id, 1.0);
+    }
+    let (l2, _) = render(&mut two, 3.0);
+    let (l6, r6) = render(&mut six, 3.0);
+    let n = l2.len();
+    assert!(
+        rms(&l6[n / 2..]) > rms(&l2[n / 2..]),
+        "more voices should sound bigger"
+    );
+    assert!(
+        l6.iter()
+            .chain(r6.iter())
+            .all(|s| s.is_finite() && s.abs() < 0.9),
+        "six voices at full level should keep headroom"
+    );
+}
+
+#[test]
+fn voices_are_tuned_to_an_open_minor_chord_and_only_two_sound_at_rest() {
+    let dsp = Dsp::new(SR);
+    let init = |path: &str| dsp.params()[dsp.param_id(path).unwrap()].init;
+    let pitches: Vec<f32> = (1..=6).map(|v| init(&format!("drone_{v}/pitch"))).collect();
+    assert_eq!(pitches, vec![55.0, 82.41, 110.0, 130.81, 164.81, 220.0]);
+    let sounding = (1..=6)
+        .filter(|v| init(&format!("drone_{v}/level")) > 0.0)
+        .count();
+    assert_eq!(sounding, 2);
 }

@@ -29,8 +29,15 @@ is now to where you send it, over the time you choose. Drones live on slow \
 change: 10 to 60 seconds is normal, 2 to 5 seconds is dramatic, under 1 second \
 is a shock.
 - Prefer `morph` (mood macros) over `gesture` (single parameters). Use \
-`gesture` for a specific touch the macros don't cover, such as retuning the \
-drone with drone_1/pitch.
+`gesture` for a specific touch the macros don't cover.
+- There are six drone voices, drone_1 to drone_6. At rest only drone_1 (A1, \
+the foundation, with a sub an octave below) and a quiet drone_2 (E2, the \
+fifth) sound. drone_3 to drone_6 wait silent (level 0) on A2, C3, E3 and A3, \
+an open A minor chord. Bring a voice in or out by gliding drone_N/level with \
+`gesture`; retune it with drone_N/pitch (Hz). Building a sound up voice by \
+voice is how it grows bigger or more epic; thinning it out is how it empties.
+- `release` and `start` accept start_in to delay the fade, e.g. to let an \
+unstable outro peak at full volume before it dies away.
 - If the person sets a general pace (\"everything slow today\", \"short and \
 direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
 call. Give `over` or `curve` explicitly only when a single move should differ \
@@ -114,24 +121,32 @@ pub struct SetPaceArgs {
 pub struct StartArgs {
     /// Seconds to fade in. Default 3.
     pub over: Option<f32>,
+    /// Seconds to wait before the fade begins. Default 0.
+    pub start_in: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReleaseArgs {
     /// Seconds to fade out to silence. Default 8. Use 1 or less only for an urgent stop.
     pub over: Option<f32>,
+    /// Seconds to wait before the fade begins, e.g. to let a gesture peak at full volume first. Default 0.
+    pub start_in: Option<f32>,
 }
 
 const DEFAULT_START: f32 = 3.0;
 const DEFAULT_RELEASE: f32 = 8.0;
 const MAX_FADE: f32 = 600.0;
 
-fn check_fade(over: f32) -> Result<f32, String> {
-    if over.is_finite() && (0.0..=MAX_FADE).contains(&over) {
-        Ok(over)
-    } else {
-        Err(format!("'over' must be between 0 and {MAX_FADE} seconds"))
+fn check_fade(over: f32, start_in: f32) -> Result<(f32, f32), String> {
+    if !(over.is_finite() && (0.0..=MAX_FADE).contains(&over)) {
+        return Err(format!("'over' must be between 0 and {MAX_FADE} seconds"));
     }
+    if !(start_in.is_finite() && (0.0..=MAX_FADE).contains(&start_in)) {
+        return Err(format!(
+            "'start_in' must be between 0 and {MAX_FADE} seconds"
+        ));
+    }
+    Ok((over, start_in))
 }
 
 /// The MCP server: a thin, validating layer over the conductor.
@@ -149,6 +164,16 @@ struct Report {
     state: moodscore_director::State,
 }
 
+/// How much of the state a tool returns.
+#[derive(Copy, Clone, PartialEq)]
+enum Detail {
+    /// Everything: `get_state`.
+    Full,
+    /// After an action: macros without descriptions, and only the parameters
+    /// that are moving, under `moving`.
+    Brief,
+}
+
 #[derive(Serialize)]
 struct Output {
     /// True while sounding or fading in; false when released or fading out.
@@ -158,6 +183,9 @@ struct Output {
     rms_dbfs: f32,
     peak_dbfs: f32,
     sample_rate: u32,
+    /// A start or release waiting to begin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduled_fade: Option<moodscore_director::ScheduledFade>,
 }
 
 #[tool_router]
@@ -169,7 +197,7 @@ impl MoodscoreServer {
         }
     }
 
-    fn report(&self) -> String {
+    fn report(&self, detail: Detail) -> String {
         let levels = self.conductor.engine().levels();
         let (gain, gain_target) = self.conductor.engine().output_gain();
         let round1 = |x: f32| (x * 10.0).round() / 10.0;
@@ -181,32 +209,49 @@ impl MoodscoreServer {
                 rms_dbfs: round1(levels.rms_dbfs()),
                 peak_dbfs: round1(levels.peak_dbfs()),
                 sample_rate: self.conductor.engine().sample_rate(),
+                scheduled_fade: self.conductor.scheduled_fade(),
             },
             state: self.conductor.state(),
         };
-        serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+        // Through text rather than to_value: f32s keep their short form
+        // (0.9, not 0.8999999761581421).
+        let mut value: serde_json::Value =
+            match serde_json::to_string(&report).and_then(|s| serde_json::from_str(&s)) {
+                Ok(v) => v,
+                Err(e) => return format!("{{\"error\":\"{e}\"}}"),
+            };
+        if detail == Detail::Brief {
+            brief(&mut value);
+        }
+        serde_json::to_string_pretty(&value).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     }
 
     #[tool(
-        description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the new state."
+        description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the output, pace, macros and the parameters that are moving."
     )]
     fn start(&self, Parameters(args): Parameters<StartArgs>) -> Result<String, String> {
-        let over = check_fade(args.over.unwrap_or(DEFAULT_START))?;
-        self.conductor.engine().fade_to(1.0, over);
-        Ok(self.report())
+        let (over, start_in) = check_fade(
+            args.over.unwrap_or(DEFAULT_START),
+            args.start_in.unwrap_or(0.0),
+        )?;
+        self.conductor.fade(1.0, over, start_in);
+        Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. Returns the new state."
+        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros and the parameters that are moving."
     )]
     fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
-        let over = check_fade(args.over.unwrap_or(DEFAULT_RELEASE))?;
-        self.conductor.engine().fade_to(0.0, over);
-        Ok(self.report())
+        let (over, start_in) = check_fade(
+            args.over.unwrap_or(DEFAULT_RELEASE),
+            args.start_in.unwrap_or(0.0),
+        )?;
+        self.conductor.fade(0.0, over, start_in);
+        Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Returns the new state."
+        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Returns the output, pace, macros and the parameters that are moving."
     )]
     fn morph(&self, Parameters(args): Parameters<MorphArgs>) -> Result<String, String> {
         let mut changes = Vec::new();
@@ -222,11 +267,11 @@ impl MoodscoreServer {
         self.conductor
             .morph(&changes, over, curve)
             .map_err(|e| e.to_string())?;
-        Ok(self.report())
+        Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example retuning the drone with drone_1/pitch). Takes that parameter out of macro control until the next morph of its macro. Returns the new state."
+        description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example bringing in a voice with drone_3/level, or retuning it with drone_3/pitch). Takes that parameter out of macro control until the next morph of its macro. Returns the output, pace, macros and the parameters that are moving."
     )]
     fn gesture(&self, Parameters(args): Parameters<GestureArgs>) -> Result<String, String> {
         let pace = self.conductor.pace();
@@ -236,25 +281,55 @@ impl MoodscoreServer {
         self.conductor
             .gesture(&args.param, args.to, over, curve, start_in)
             .map_err(|e| e.to_string())?;
-        Ok(self.report())
+        Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the new state."
+        description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the output, pace, macros and the parameters that are moving."
     )]
     fn set_pace(&self, Parameters(args): Parameters<SetPaceArgs>) -> Result<String, String> {
         self.conductor
             .set_pace(args.over, args.curve.map(Curve::from))
             .map_err(|e| e.to_string())?;
-        Ok(self.report())
+        Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "See what Moodscore is doing: whether it is playing, the current pace, every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
+        description = "See everything Moodscore is doing: whether it is playing (and any start or release waiting to begin), the current pace, every mood macro and parameter with its current value, target, owner and seconds of movement remaining, plus the output level in dBFS."
     )]
     fn get_state(&self, Parameters(_): Parameters<GetStateArgs>) -> String {
-        self.report()
+        self.report(Detail::Full)
     }
+}
+
+/// Trim a full report down to what an agent needs after an action.
+fn brief(report: &mut serde_json::Value) {
+    let Some(obj) = report.as_object_mut() else {
+        return;
+    };
+    if let Some(serde_json::Value::Array(macros)) = obj.get_mut("macros") {
+        for m in macros {
+            if let Some(m) = m.as_object_mut() {
+                m.remove("description");
+            }
+        }
+    }
+    let moving: Vec<serde_json::Value> = match obj.remove("params") {
+        Some(serde_json::Value::Array(params)) => params
+            .into_iter()
+            .filter(|p| p["seconds_remaining"].as_f64().unwrap_or(0.0) > 0.0)
+            .map(|mut p| {
+                if let Some(p) = p.as_object_mut() {
+                    for k in ["min", "max", "unit"] {
+                        p.remove(k);
+                    }
+                }
+                p
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    obj.insert("moving".into(), serde_json::Value::Array(moving));
 }
 
 #[tool_handler(router = self.tool_router)]

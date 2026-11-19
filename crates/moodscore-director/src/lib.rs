@@ -10,9 +10,11 @@
 //!   parameters through mappings loaded from data ([`mapping`]).
 //! - **Parameters**, directly, through [`Director::gesture`].
 //!
-//! Every parameter has one owner at a time: a macro, or manual control.
-//! A `gesture` takes a parameter into manual control; a `morph` of its macro
-//! takes it back, gliding from wherever it is to where the macro wants it.
+//! Every parameter is either under macro control or manual control. Under
+//! macro control, one macro may set it and others may add to it (see
+//! [`mapping`]). A `gesture` takes a parameter into manual control; a `morph`
+//! of any macro that drives it takes it back, gliding from wherever it is to
+//! where the macros want it.
 //! No change ever starts from anywhere but the current value.
 //!
 //! [`Director`] is pure (time is passed in), which makes it easy to test.
@@ -31,7 +33,7 @@ use moodscore_engine::{EngineHandle, ParamInfo, Scale};
 use serde::Serialize;
 
 pub use curve::Curve;
-pub use mapping::{MacroDef, MappingError, DEFAULT_MAPPINGS};
+pub use mapping::{MacroDef, MappingError, Mode, DEFAULT_MAPPINGS};
 
 /// The shortest a gesture can take, in seconds. "Instant" means this.
 pub const MIN_DURATION: f32 = 0.05;
@@ -186,7 +188,8 @@ impl Lane {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Owner {
-    Macro(usize),
+    /// Driven by the macros in `ParamLane::mapped_by`.
+    Macros,
     Manual,
 }
 
@@ -202,10 +205,31 @@ struct ParamLane {
     owner: Owner,
     manual: Lane,
     reclaim: Option<Reclaim>,
-    /// Which macro drives this parameter in the mappings, if any.
-    mapped_by: Option<(usize, usize)>,
+    /// The macros that drive this parameter: (macro index, target index).
+    mapped_by: Vec<(usize, usize)>,
+    /// The parameter's value when no macro sets it (adds start from here).
+    init: f32,
+    min: f32,
+    max: f32,
     out: f32,
     log: bool,
+}
+
+impl ParamLane {
+    /// Where the macros put this parameter, given each macro's value.
+    fn macro_value(&self, macros: &[MacroDef], macro_values: impl Fn(usize) -> f32) -> f32 {
+        let mut base = self.init;
+        let mut offset = 0.0;
+        for &(mi, ti) in &self.mapped_by {
+            let t = &macros[mi].targets[ti];
+            let v = t.value(macro_values(mi));
+            match t.mode {
+                Mode::Set => base = v,
+                Mode::Add => offset += v,
+            }
+        }
+        (base + offset).clamp(self.min, self.max)
+    }
 }
 
 /// The pure gesture engine. Time is passed in, in seconds.
@@ -229,7 +253,10 @@ impl Director {
                     owner: Owner::Manual,
                     manual: Lane::new(p.init, log),
                     reclaim: None,
-                    mapped_by: None,
+                    mapped_by: Vec::new(),
+                    init: p.init,
+                    min: p.min,
+                    max: p.max,
                     out: p.init,
                     log,
                 }
@@ -239,9 +266,13 @@ impl Director {
         for (mi, m) in macros.iter().enumerate() {
             for (ti, t) in m.targets.iter().enumerate() {
                 let lane = &mut lanes[t.param];
-                lane.mapped_by = Some((mi, ti));
-                lane.owner = Owner::Macro(mi);
-                lane.out = t.value(m.default);
+                lane.mapped_by.push((mi, ti));
+                lane.owner = Owner::Macros;
+            }
+        }
+        for lane in &mut lanes {
+            if lane.owner == Owner::Macros {
+                lane.out = lane.macro_value(&macros, |mi| macros[mi].default);
             }
         }
 
@@ -335,9 +366,9 @@ impl Director {
             self.macro_lanes[mi].start(now, value, 0.0, duration, curve);
             for t in &self.macros[mi].targets {
                 let lane = &mut self.lanes[t.param];
-                if lane.owner != Owner::Macro(mi) || lane.reclaim.is_some() {
+                if lane.owner != Owner::Macros || lane.reclaim.is_some() {
                     let from = lane.out;
-                    lane.owner = Owner::Macro(mi);
+                    lane.owner = Owner::Macros;
                     lane.reclaim = Some(Reclaim {
                         from,
                         blend: Gesture {
@@ -409,9 +440,8 @@ impl Director {
                     lane.manual.settle(now);
                     v
                 }
-                Owner::Macro(mi) => {
-                    let (_, ti) = lane.mapped_by.expect("macro-owned lanes are mapped");
-                    let mapped = self.macros[mi].targets[ti].value(macro_values[mi]);
+                Owner::Macros => {
+                    let mapped = lane.macro_value(&self.macros, |mi| macro_values[mi]);
                     match &lane.reclaim {
                         Some(r) => {
                             let k = r.blend.progress(now);
@@ -459,16 +489,25 @@ impl Director {
                         lane.manual.target(),
                         lane.manual.remaining(now),
                     ),
-                    Owner::Macro(mi) => {
-                        let (_, ti) = lane.mapped_by.expect("mapped");
+                    Owner::Macros => {
                         let target =
-                            self.macros[mi].targets[ti].value(self.macro_lanes[mi].target());
-                        let remaining = self.macro_lanes[mi].remaining(now).max(
-                            lane.reclaim
-                                .as_ref()
-                                .map_or(0.0, |r| r.blend.remaining(now)),
-                        );
-                        (format!("macro:{}", self.macros[mi].name), target, remaining)
+                            lane.macro_value(&self.macros, |mi| self.macro_lanes[mi].target());
+                        let remaining = lane
+                            .mapped_by
+                            .iter()
+                            .map(|&(mi, _)| self.macro_lanes[mi].remaining(now))
+                            .fold(
+                                lane.reclaim
+                                    .as_ref()
+                                    .map_or(0.0, |r| r.blend.remaining(now)),
+                                f32::max,
+                            );
+                        let names: Vec<&str> = lane
+                            .mapped_by
+                            .iter()
+                            .map(|&(mi, _)| self.macros[mi].name.as_str())
+                            .collect();
+                        (format!("macro:{}", names.join("+")), target, remaining)
                     }
                 };
                 ParamState {
@@ -531,9 +570,27 @@ pub struct ParamState {
     pub max: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// `"macro:<name>"` or `"manual"`.
+    /// `"manual"`, or `"macro:<name>"` (`"macro:<a>+<b>"` when several macros drive it).
     pub owner: String,
     pub seconds_remaining: f32,
+}
+
+/// A transport fade waiting to start.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize)]
+pub struct ScheduledFade {
+    /// Output gain the fade goes to: 1 for a start, 0 for a release.
+    pub to: f32,
+    /// Seconds until it starts.
+    pub starts_in: f32,
+    /// Seconds the fade takes once it starts.
+    pub over: f32,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct PendingFade {
+    at: f64,
+    to: f32,
+    over: f32,
 }
 
 /// Runs a [`Director`] against a live engine on a control thread.
@@ -545,6 +602,7 @@ pub struct Conductor {
     engine: EngineHandle,
     clock: Instant,
     running: Arc<AtomicBool>,
+    pending_fade: Arc<Mutex<Option<PendingFade>>>,
 }
 
 impl Conductor {
@@ -560,6 +618,7 @@ impl Conductor {
             engine,
             clock: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
+            pending_fade: Arc::new(Mutex::new(None)),
         };
         let loop_c = c.clone();
         thread::Builder::new()
@@ -578,6 +637,15 @@ impl Conductor {
                 d.tick(now);
                 for (id, v) in d.values().enumerate() {
                     self.engine.set_target(id, v);
+                }
+            }
+            {
+                let mut pending = self.pending();
+                if let Some(f) = *pending {
+                    if now >= f.at {
+                        self.engine.fade_to(f.to, f.over);
+                        *pending = None;
+                    }
                 }
             }
             thread::sleep(period);
@@ -626,6 +694,37 @@ impl Conductor {
 
     pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {
         self.lock().set_pace(over, curve)
+    }
+
+    /// Fade the output to `to` (0 = silence, 1 = full) over `over` seconds,
+    /// starting in `start_in` seconds. Replaces any fade still waiting to
+    /// start; a fade already under way is taken over from where it is.
+    pub fn fade(&self, to: f32, over: f32, start_in: f32) {
+        let mut pending = self.pending();
+        if start_in > 0.0 {
+            *pending = Some(PendingFade {
+                at: self.now() + start_in as f64,
+                to,
+                over,
+            });
+        } else {
+            *pending = None;
+            self.engine.fade_to(to, over);
+        }
+    }
+
+    /// The transport fade waiting to start, if any.
+    pub fn scheduled_fade(&self) -> Option<ScheduledFade> {
+        let now = self.now();
+        self.pending().map(|f| ScheduledFade {
+            to: f.to,
+            starts_in: round((f.at - now).max(0.0) as f32),
+            over: f.over,
+        })
+    }
+
+    fn pending(&self) -> MutexGuard<'_, Option<PendingFade>> {
+        self.pending_fade.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Stop the control loop.

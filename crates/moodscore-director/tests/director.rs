@@ -241,3 +241,102 @@ fn state_reports_pace() {
     let json = serde_json::to_string(&d.state(0.0)).unwrap();
     assert!(json.contains("\"pace\":{\"over\":30.0,\"curve\":\"ease_in\"}"));
 }
+
+/// A director with a custom mapping, for testing mapping features.
+fn director_with(json: &str) -> Director {
+    let p = params();
+    let macros = mapping::load(json, &p).expect("valid test mapping");
+    Director::new(p, macros)
+}
+
+#[test]
+fn wildcards_drive_every_matching_parameter() {
+    let d = director();
+    let state = d.state(0.0);
+    let drifts: Vec<_> = state
+        .params
+        .iter()
+        .filter(|p| p.path.starts_with("drone_") && p.path.ends_with("/drift"))
+        .collect();
+    assert!(drifts.len() >= 2, "expected several drone voices");
+    for p in drifts {
+        assert_eq!(p.owner, "macro:instability", "{}", p.path);
+    }
+}
+
+#[test]
+fn add_macros_stack_on_top_of_the_setter() {
+    let mut d = director_with(
+        r#"{"macros":{
+            "dark": {"default":0.0,"targets":[{"param":"filter/resonance","from":0.2,"to":0.4}]},
+            "tense":{"default":0.0,"targets":[{"param":"filter/resonance","from":0.0,"to":0.3,"mode":"add"}]}
+        }}"#,
+    );
+    assert!((value(&d, "filter/resonance") - 0.2).abs() < 1e-5);
+
+    d.morph(0.0, &[("tense", 1.0)], 1.0, Curve::Linear).unwrap();
+    d.tick(1.0);
+    assert!((value(&d, "filter/resonance") - 0.5).abs() < 1e-5);
+
+    d.morph(1.0, &[("dark", 1.0)], 1.0, Curve::Linear).unwrap();
+    d.tick(2.0);
+    assert!((value(&d, "filter/resonance") - 0.7).abs() < 1e-5);
+
+    let state = d.state(2.0);
+    let reso = state
+        .params
+        .iter()
+        .find(|p| p.path == "filter/resonance")
+        .unwrap();
+    assert_eq!(reso.owner, "macro:dark+tense");
+}
+
+#[test]
+fn stacked_values_are_clamped_and_adds_start_from_the_default() {
+    // nothing sets the resonance: the add starts from its default (0.3)
+    let mut d = director_with(
+        r#"{"macros":{"tense":{"default":0.0,"targets":[
+            {"param":"filter/resonance","from":0.0,"to":0.9,"mode":"add"}]}}}"#,
+    );
+    assert!((value(&d, "filter/resonance") - 0.3).abs() < 1e-5);
+    d.morph(0.0, &[("tense", 1.0)], 0.0, Curve::Linear).unwrap();
+    d.tick(1.0);
+    assert!((value(&d, "filter/resonance") - 0.95).abs() < 1e-5); // range max
+}
+
+#[test]
+fn a_shared_parameter_moves_without_jumps_when_another_macro_joins() {
+    let mut d = director_with(
+        r#"{"macros":{
+            "dark": {"default":0.5,"targets":[{"param":"filter/resonance","from":0.2,"to":0.4}]},
+            "tense":{"default":0.0,"targets":[{"param":"filter/resonance","from":0.0,"to":0.3,"mode":"add"}]}
+        }}"#,
+    );
+    d.morph(0.0, &[("dark", 1.0)], 10.0, Curve::Linear).unwrap();
+    d.morph(5.0, &[("tense", 1.0)], 10.0, Curve::Linear)
+        .unwrap();
+    let t = trace(&mut d, "filter/resonance", 0.0, 20.0, 0.01);
+    let biggest_step = t
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(biggest_step < 0.001, "jump of {biggest_step}");
+}
+
+#[test]
+fn mapping_rules_for_add_and_wildcards() {
+    let p = params();
+    let two_setters = r#"{"macros":{
+        "a":{"default":0.5,"targets":[{"param":"filter/resonance","from":0,"to":0.5}]},
+        "b":{"default":0.5,"targets":[{"param":"filter/resonance","from":0,"to":0.5}]}}}"#;
+    assert!(mapping::load(two_setters, &p).is_err());
+    let exp_add = r#"{"macros":{"a":{"default":0.5,"targets":[
+        {"param":"filter/cutoff","from":1,"to":100,"curve":"exp","mode":"add"}]}}}"#;
+    assert!(mapping::load(exp_add, &p).is_err());
+    let no_match = r#"{"macros":{"a":{"default":0.5,"targets":[
+        {"param":"voice_*/drift","from":0,"to":1}]}}}"#;
+    assert!(mapping::load(no_match, &p).is_err());
+    let typo = r#"{"macros":{"a":{"default":0.5,"targets":[
+        {"param":"filter/resonance","from":0,"to":0.5,"mdoe":"add"}]}}}"#;
+    assert!(mapping::load(typo, &p).is_err());
+}

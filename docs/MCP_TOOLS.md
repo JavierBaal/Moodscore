@@ -10,7 +10,7 @@ These are the tools an agent uses to play Moodscore. They are designed around on
 - Durations are in seconds (`over`). `0` means "as fast as is musically safe" (a short smoothing time, never a hard jump).
 - Curves: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `exponential`, `logarithmic`.
 - When a call omits `over` or `curve`, it uses the current pace: 10 seconds and `ease_in_out` unless `set_pace` changed it. Transport fades (`start`, `release`) have their own defaults.
-- Every call returns the resulting state, so the agent never has to guess.
+- Every call returns the resulting state, so the agent never has to guess. Action tools return a brief report (output, pace, macros, and only the parameters that are moving, under `moving`); `get_state` returns everything.
 - Invalid calls (unknown names, values out of range) return a tool error explaining what was wrong; nothing changes.
 
 ## Transport
@@ -22,20 +22,20 @@ Moodscore starts silent when an MCP client launches it. Nothing sounds until the
 Fade in from silence. After a `release`, brings the sound back exactly as it was.
 
 ```json
-{ "over": 3 }
+{ "over": 3, "start_in": 0 }
 ```
 
-`over` defaults to 3 seconds.
+`over` defaults to 3 seconds. `start_in` (Phase 2 ✅) delays the fade.
 
 ### `release` ✅
 
 Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should map here. The instrument keeps its state; `start` brings it back.
 
 ```json
-{ "over": 12 }
+{ "over": 12, "start_in": 40 }
 ```
 
-`over` defaults to 8 seconds.
+`over` defaults to 8 seconds. `start_in` (Phase 2 ✅) delays the fade, so a gesture can peak at full volume before the sound dies away (an unstable outro, say). A waiting fade shows up in `output.scheduled_fade`; any new `start` or `release` replaces it.
 
 ### `set_pace` ✅ Phase 2
 
@@ -138,7 +138,7 @@ Macros: `darkness` ✅, `instability` ✅; `tension`, `density`, `motion`, `dist
 | Macro | 0 | 1 | Drives |
 |---|---|---|---|
 | `darkness` | open and airy | closed, low and murky | filter cutoff and resonance, sub, level, reverb |
-| `instability` | steady and pure | wavering, beating, seasick | pitch drift, detune between oscillators | Omitted macros keep moving (or stay) as they were.
+| `instability` | steady and pure | wavering, beating, seasick | pitch drift and detune of every drone voice | Omitted macros keep moving (or stay) as they were.
 
 ### `set_scene`
 
@@ -160,13 +160,17 @@ Move a single raw parameter along a trajectory. For when a macro is too coarse. 
 
 ```json
 {
-  "param": "drone_4.level",
+  "param": "drone_4/level",
   "to": 0.4,
   "over": 60,
   "curve": "ease_in_out",
   "start_in": 10
 }
 ```
+
+#### Voices ✅ Phase 2
+
+Six drone voices, `drone_1` … `drone_6`, each with `pitch` (Hz), `level`, `detune` (cents) and `drift`; `drone_1` also has `sub`. At rest `drone_1` (A1) and a quiet `drone_2` (E2) sound; `drone_3` … `drone_6` wait at level 0 on A2, C3, E3, A3 (an open A minor chord). Until `harmony` and `voice` exist, bring voices in and out and retune them with `gesture` on `drone_N/level` and `drone_N/pitch`.
 
 ### `voice`
 
@@ -184,7 +188,7 @@ Freeze everything at its current position (cancel pending gestures without jumpi
 
 ### `get_state` ✅ Phase 1
 
-The current pace, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). Voice states and changes the human made by hand arrive in later phases.
+The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). Voice states and changes the human made by hand arrive in later phases.
 
 ### `listen`
 

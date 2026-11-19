@@ -26,10 +26,12 @@ The milestone that decides whether the idea works:
 ## Phase 2: The instrument
 
 Sound:
-- Six drone voices and two melodic voices
+- [x] Six drone voices (A minor chord at rest, two sounding), with energy-based normalisation
+- [ ] Two melodic voices (after harmony and the tempo clock: they need notes to play)
 - All six mood macros with data-driven mappings
   - [x] `instability` (pitch drift and detune)
-  - [ ] `tension`: needs the six-voice DSP (dissonance, suspensions) and macros that can share a parameter with `darkness`
+  - [x] Macros can share a parameter (`"mode": "add"`) and target many with `*` patterns
+  - [ ] `tension`: dissonance and suspensions come with `harmony`; until then it would only be resonance and beating
 
 Harmony:
 - The six drone voices form a chord; the agent sets a harmonic plan (key, mode, progression with durations) and the engine walks it, voices gliding or crossfading between chords
@@ -48,6 +50,7 @@ Pulse (cinematic rhythm, not a drum machine):
 - `urgency` macro: pulse density, tempo and tension together ("time is running out")
 
 Session:
+- [x] `start_in` for `start` and `release` (delayed fades, e.g. an outro that peaks before it dies)
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library
 - `voice`, `hold`, `panic`
 

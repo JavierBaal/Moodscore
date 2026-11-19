@@ -118,6 +118,34 @@ check(not err and inst["seconds_remaining"] <= 0.5, "explicit 'over' overrides t
 err, text = call("set_pace", {})
 check(err, f"empty set_pace rejected: {text}")
 
+full = json.loads(call("get_state", {})[1])
+check(
+    sum(1 for p in full["params"] if p["path"].endswith("/level") and p["path"].startswith("drone_")) == 6,
+    "six drone voices",
+)
+err, text = call("gesture", {"param": "drone_3/level", "to": 0.5, "over": 2})
+brief = json.loads(text)
+check(
+    not err and "params" not in brief and any(p["path"] == "drone_3/level" for p in brief["moving"]),
+    "action tools return a brief report with the moving parameters",
+)
+
+err, text = call("release", {"over": 1, "start_in": 30})
+out = json.loads(text)["output"]
+check(
+    not err and out["playing"] and out["scheduled_fade"]["to"] == 0.0
+    and 29 < out["scheduled_fade"]["starts_in"] <= 30,
+    f"release can wait ({out.get('scheduled_fade')})",
+)
+err, text = call("start", {"over": 0.5})
+check(not err and "scheduled_fade" not in json.loads(text)["output"], "a new transport call cancels the scheduled one")
+err, text = call("release", {"over": 0.5, "start_in": 0.5})
+time.sleep(1.5)
+out = json.loads(call("get_state", {})[1])["output"]
+check(out["gain"] == 0.0 and "scheduled_fade" not in out, "a delayed release happens on time")
+call("start", {"over": 0.2})
+time.sleep(0.5)
+
 err, text = call("release", {"over": 0.5})
 check(not err and not json.loads(text)["output"]["playing"], "release")
 time.sleep(1.0)
