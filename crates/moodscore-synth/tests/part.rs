@@ -300,3 +300,31 @@ fn the_send_follows_the_dry_sound() {
     }
     assert!(energy(&dl) > 0.0);
 }
+
+#[test]
+fn factory_presets_sound_at_a_sane_level() {
+    for preset in moodscore_synth::Preset::factory() {
+        let mut p = Part::new(SR, 9);
+        p.set_patch(&preset.patch.0);
+        p.set_tempo(2.0);
+        // An A minor arpeggio in eighths, then a held note.
+        let mut ev = Vec::new();
+        for (i, note) in [57u8, 60, 64, 69, 64, 60, 57, 52].into_iter().enumerate() {
+            ev.push((i * 12_000, on(note)));
+            ev.push((i * 12_000 + 10_000, Event::NoteOff { note }));
+        }
+        ev.push((96_000, on(69)));
+        ev.push((144_000, Event::NoteOff { note: 69 }));
+        let (l, r) = render_lr(&mut p, &ev, 192_000);
+        let peak = l.iter().chain(&r).fold(0.0f32, |m, s| m.max(s.abs()));
+        let rms = (energy(&l[..96_000]) / 96_000.0).sqrt();
+        println!("{}: peak {:.2}, rms {:.3}", preset.name, peak, rms);
+        assert!(peak < 1.0 && peak > 0.1, "{} peak {peak}", preset.name);
+        assert!(rms > 0.02, "{} too quiet", preset.name);
+        assert!(
+            l[190_000..].iter().all(|s| s.abs() < 0.05),
+            "{} rings on",
+            preset.name
+        );
+    }
+}

@@ -2,14 +2,21 @@
 //!
 //! The tools an AI agent uses to play Moodscore, as described in
 //! `docs/MCP_TOOLS.md`: `start` and `release` (the transport), `morph`
-//! (the mood macros), `gesture`, `harmony`, `tempo`, `set_pace` and
+//! (the mood macros), `gesture`, `harmony`, `tempo`, `set_pace`, the note
+//! parts (`patch`, `play_notes`, `list_presets`, `save_preset`) and
 //! `get_state`.
 //!
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
 
+mod notes;
+
+use std::sync::{Arc, Mutex};
+
 use moodscore_director::harmony::{parse_note, Chord, Key};
 use moodscore_director::{Conductor, Curve, HarmonyPlan, Length, Meter, StartOn};
+use moodscore_engine::{NoteEvent, PARTS};
+use moodscore_synth::{Patch, Preset};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -62,6 +69,15 @@ call. Give `over` or `curve` explicitly only when a single move should differ \
 from the pace. `get_state` reports the current pace.
 - You can change your mind at any time: a new instruction starts from wherever \
 the sound is, never with a jump.
+- Two note parts, note_1 and note_2, play notes over the drones: plucks, \
+leads, motifs. Each is a synth you shape: load a preset with `patch` \
+(`list_presets` lists them; pluck and lead come built in), adjust it with \
+`patch` set (every parameter is listed with its range in the patch \
+description and in docs), and hear it with `play_notes`, a short phrase in \
+beats that follows the tempo. When a sound is right, `save_preset` keeps it. \
+Notes share the drones' room. Describe sounds to the person in musical \
+words; move part/expression (with gesture on note_N/part/expression) to \
+open or shape a sound while it plays, if the preset routes it.
 - Call `get_state` to see what is moving, how long it has left, and how loud \
 the output is.
 - Talk to the person in musical, sensory terms. Don't recite numbers unless \
@@ -169,6 +185,66 @@ const DEFAULT_GLIDE: f32 = 3.0;
 const MAX_CHORDS: usize = 64;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PatchArgs {
+    /// Which note part: 1 or 2. Default 1.
+    pub part: Option<serde_json::Value>,
+    /// Load this preset first (see list_presets), e.g. "pluck" or "lead".
+    pub preset: Option<String>,
+    /// Parameters to change, as path → value, e.g. {"filter/cutoff": 1200, "osc1/shape": 2.5, "mod1/source": "lfo1"}. Choices by name. Omit to just describe the patch.
+    pub set: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Seconds for continuous changes in `set` to glide (counts and choices switch). Default 0.
+    pub over: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListPresetsArgs {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SavePresetArgs {
+    /// Which note part's sound to save: 1 or 2. Default 1.
+    pub part: Option<serde_json::Value>,
+    /// Name for the preset (letters, digits, spaces, _ or -).
+    pub name: String,
+    /// What it sounds like and what it is for, in a sentence or two.
+    pub description: String,
+    /// Replace a saved preset of the same name. Default false.
+    pub overwrite: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NoteStep {
+    /// A note ("A3", "C#4", "Bb2"; C4 is middle C), a chord ("A3 C4 E4"), a MIDI number ("57"), or "rest".
+    pub notes: String,
+    /// Length in beats of the current metre. Default 1.
+    pub beats: Option<f32>,
+    /// 0 to 1. Default 0.8.
+    pub velocity: Option<f32>,
+    /// Fraction of the step the note is held. Default 0.9. Above 1 overlaps the next note (a legato patch then slides).
+    pub gate: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PlayNotesArgs {
+    /// Which note part: 1 or 2. Default 1.
+    pub part: Option<serde_json::Value>,
+    /// The phrase, step by step.
+    pub steps: Option<Vec<NoteStep>>,
+    /// Play the phrase this many times. Default 1, at most 16.
+    pub repeat: Option<u32>,
+    /// When it starts: "now" (default), "beat" or "bar".
+    pub start_on: Option<String>,
+    /// Release every note of the part. Other fields are ignored.
+    pub stop: Option<bool>,
+}
+
+/// The preset each part last loaded (name and patch), if any.
+type Loaded = [Option<(String, Patch)>; PARTS];
+
+const MAX_STEPS: usize = 64;
+const MAX_REPEAT: u32 = 16;
+const MAX_EVENTS: usize = 512;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPaceArgs {
     /// Default seconds for every move that doesn't give its own. 0 means as fast as is musically safe. Omit to keep the current value.
     pub over: Option<f32>,
@@ -212,6 +288,8 @@ fn check_fade(over: f32, start_in: f32) -> Result<(f32, f32), String> {
 #[derive(Clone)]
 pub struct MoodscoreServer {
     conductor: Conductor,
+    /// The preset each part last loaded, with its patch (to tell edits).
+    loaded: Arc<Mutex<Loaded>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -219,6 +297,8 @@ pub struct MoodscoreServer {
 struct Report {
     seconds_since_start: f64,
     output: Output,
+    /// The note parts.
+    notes: Vec<notes::PartStatus>,
     #[serde(flatten)]
     state: moodscore_director::State,
 }
@@ -253,8 +333,19 @@ impl MoodscoreServer {
     pub fn new(conductor: Conductor) -> Self {
         Self {
             conductor,
+            loaded: Arc::new(Mutex::new(Default::default())),
             tool_router: Self::tool_router(),
         }
+    }
+
+    fn loaded(&self) -> std::sync::MutexGuard<'_, Loaded> {
+        self.loaded.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn part_json(&self, part: usize) -> serde_json::Value {
+        let loaded = self.loaded()[part].clone();
+        serde_json::to_value(notes::report(&self.conductor, part, &loaded))
+            .unwrap_or(serde_json::Value::Null)
     }
 
     fn report(&self, detail: Detail) -> String {
@@ -271,6 +362,12 @@ impl MoodscoreServer {
                 sample_rate: self.conductor.engine().sample_rate(),
                 scheduled_fade: self.conductor.scheduled_fade(),
             },
+            notes: {
+                let loaded = self.loaded().clone();
+                (0..PARTS)
+                    .map(|p| notes::status(&self.conductor, p, &loaded[p]))
+                    .collect()
+            },
             state: self.conductor.state(),
         };
         // Through text rather than to_value: f32s keep their short form
@@ -280,6 +377,10 @@ impl MoodscoreServer {
                 Ok(v) => v,
                 Err(e) => return format!("{{\"error\":\"{e}\"}}"),
             };
+        // The note parts' parameters are reported by `patch`, not here.
+        if let Some(serde_json::Value::Array(params)) = value.get_mut("params") {
+            params.retain(|p| !p["path"].as_str().unwrap_or("").starts_with("note_"));
+        }
         if detail == Detail::Brief {
             brief(&mut value);
         }
@@ -463,6 +564,200 @@ impl MoodscoreServer {
             .set_tempo(args.bpm, meter, ramp, curve, args.downbeat.unwrap_or(false))
             .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
+    }
+
+    #[tool(
+        description = "Shape a note part's sound. Load a preset (preset: \"pluck\"), change parameters (set: {\"filter/cutoff\": 900, \"osc1/unison\": 5, \"mod2/source\": \"lfo2\"}), or with neither just describe it. The synth: two oscillators morphing sine 0, triangle 1, saw 2, square 3 (osc1/shape, pw, octave, semi, fine, unison, detune, spread, sync, random_phase), fm/amount (osc2 on osc1), sub, noise, shape/fold and shape/drive, a filter (filter/type low_pass, band_pass, high_pass; slope 12 or 24; cutoff Hz; resonance; keytrack; env_amount in octaves), envelopes amp_env, filter_env, mod_env (attack, decay, sustain, release; amp_env/velocity), part/voices (1 to 4; 1 is monophonic), part/legato, part/glide, two LFOs (lfo1/shape sine triangle saw square random, rate Hz or sync with division like 1/8 or 1/4d, delay, fade, retrigger), eight modulation slots (modN/source: mod_env, filter_env, amp_env, lfo1, lfo2, velocity, note, random, expression; modN/dest: pitch/bend, voice/gain, voice/pan, osc levels, shapes, pw, fine, detune, sync, fm/amount, fold, drive, filter/cutoff, filter/resonance, lfo rates; modN/amount -1 to 1 as a fraction of the target's range, of its octaves for frequencies), effects (fx/distortion, chorus_mix, chorus_rate, chorus_depth, delay_mix, delay_division, delay_feedback, delay_width, delay_tone) and part/level, part/pan, part/reverb_send. Returns the part's description and every parameter that differs from the default."
+    )]
+    fn patch(&self, Parameters(args): Parameters<PatchArgs>) -> Result<String, String> {
+        let part = notes::part_index(args.part.as_ref())?;
+        let over = args.over.unwrap_or(0.0);
+        if !over.is_finite() || !(0.0..=600.0).contains(&over) {
+            return Err("over must be between 0 and 600 seconds".into());
+        }
+        let set = match &args.set {
+            Some(m) => notes::parse_set(m)?,
+            None => Vec::new(),
+        };
+        let preset = args
+            .preset
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .map(notes::find_preset)
+            .transpose()?;
+        if let Some(p) = &preset {
+            // Every parameter, so earlier tweaks don't linger.
+            let all: Vec<(String, f32)> = moodscore_engine::synth_params::PARAMS
+                .iter()
+                .zip(&p.patch.0)
+                .map(|(d, &v)| (d.path.to_string(), v))
+                .collect();
+            self.conductor
+                .set_params(&notes::to_changes(part, &all), 0.0)
+                .map_err(|e| e.to_string())?;
+            self.loaded()[part] = Some((p.name.clone(), p.patch.clone()));
+        }
+        if !set.is_empty() {
+            self.conductor
+                .set_params(&notes::to_changes(part, &set), over)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(serde_json::to_string_pretty(&self.part_json(part)).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "List the note presets: the built-in ones and those saved with save_preset, each with what it sounds like."
+    )]
+    fn list_presets(&self, Parameters(_): Parameters<ListPresetsArgs>) -> String {
+        let list: Vec<serde_json::Value> = notes::all_presets()
+            .into_iter()
+            .map(|(p, factory)| {
+                serde_json::json!({
+                    "name": p.name,
+                    "description": p.description,
+                    "built_in": factory,
+                })
+            })
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({ "presets": list })).unwrap_or_default()
+    }
+
+    #[tool(
+        description = "Save a note part's current sound as a named preset, with a description of what it sounds like and what it is for, so it can be loaded again with patch in any session."
+    )]
+    fn save_preset(&self, Parameters(args): Parameters<SavePresetArgs>) -> Result<String, String> {
+        let part = notes::part_index(args.part.as_ref())?;
+        let name = notes::check_name(&args.name)?;
+        let existing = notes::all_presets();
+        if let Some((_, factory)) = existing.iter().find(|(p, _)| p.name == name) {
+            if *factory {
+                return Err(format!(
+                    "'{name}' is a built-in preset; choose another name"
+                ));
+            }
+            if !args.overwrite.unwrap_or(false) {
+                return Err(format!(
+                    "a preset called '{name}' exists; pass overwrite: true to replace it"
+                ));
+            }
+        }
+        let dir =
+            notes::user_dir().ok_or("no folder to save presets in (set MOODSCORE_PRESETS)")?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        let patch = notes::current_patch(&self.conductor, part);
+        let preset = Preset {
+            name: name.clone(),
+            description: args.description.trim().to_string(),
+            patch: patch.clone(),
+        };
+        let path = dir.join(format!("{name}.json"));
+        std::fs::write(&path, preset.to_json())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        self.loaded()[part] = Some((name.clone(), patch));
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "saved": name,
+            "file": path.display().to_string(),
+        }))
+        .unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Play a short phrase on a note part, to hear its sound or to place a motif: steps of notes or chords with lengths in beats, following the tempo (set with tempo). The notes start on their exact sample. Use it to audition a patch while shaping it, or for a motif over the drones; for long melodies use a proper sequencer instead. stop: true releases the part's notes. Returns the output and the note parts."
+    )]
+    fn play_notes(&self, Parameters(args): Parameters<PlayNotesArgs>) -> Result<String, String> {
+        let part = notes::part_index(args.part.as_ref())?;
+        if args.stop.unwrap_or(false) {
+            self.conductor
+                .schedule_notes(part, &[(0.0, NoteEvent::AllOff)]);
+            return Ok(self.report(Detail::Brief));
+        }
+        let raw = args.steps.filter(|s| !s.is_empty()).ok_or(
+            "play_notes needs steps, e.g. [{\"notes\": \"A3\", \"beats\": 1}], or stop: true",
+        )?;
+        if raw.len() > MAX_STEPS {
+            return Err(format!("a phrase can have at most {MAX_STEPS} steps"));
+        }
+        let repeat = args.repeat.unwrap_or(1);
+        if !(1..=MAX_REPEAT).contains(&repeat) {
+            return Err(format!("repeat must be between 1 and {MAX_REPEAT}"));
+        }
+        let mut steps = Vec::with_capacity(raw.len());
+        for (i, s) in raw.iter().enumerate() {
+            let at = |e: String| format!("step {} ({}): {e}", i + 1, s.notes);
+            let beats = s.beats.unwrap_or(1.0);
+            if !beats.is_finite() || !(0.0625..=64.0).contains(&beats) {
+                return Err(at("beats must be between 1/16 and 64".into()));
+            }
+            let velocity = s.velocity.unwrap_or(0.8);
+            if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
+                return Err(at("velocity must be between 0 and 1".into()));
+            }
+            let gate = s.gate.unwrap_or(0.9);
+            if !gate.is_finite() || !(0.05..=2.0).contains(&gate) {
+                return Err(at("gate must be between 0.05 and 2".into()));
+            }
+            let notes = notes::parse_notes(&s.notes).map_err(at)?;
+            if notes.len() > 8 {
+                return Err(at("at most 8 notes at once".into()));
+            }
+            steps.push(notes::Step {
+                notes,
+                beats,
+                velocity,
+                gate,
+            });
+        }
+        let tempo = self.conductor.tempo();
+        let now = self.conductor.now();
+        let start = match args
+            .start_on
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("") | Some("now") => now,
+            Some("beat") => tempo.next_beat(now),
+            Some("bar") | Some("downbeat") => tempo.next_bar(now),
+            Some(other) => {
+                return Err(format!(
+                    "start_on '{other}': use \"now\", \"beat\" or \"bar\""
+                ))
+            }
+        };
+        let events = notes::schedule(&tempo, start, &steps, repeat);
+        if events.len() > MAX_EVENTS {
+            return Err(format!(
+                "that is {} note events; at most {MAX_EVENTS} per call (shorten the phrase or repeat less)",
+                events.len()
+            ));
+        }
+        let queued = self.conductor.schedule_notes(part, &events);
+        if queued < events.len() {
+            return Err(format!(
+                "only {queued} of {} note events fit in the queue; wait for the phrase to play",
+                events.len()
+            ));
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_str(&self.report(Detail::Brief)).unwrap_or_default();
+        if let Some(obj) = value.as_object_mut() {
+            let total: f64 = steps
+                .iter()
+                .map(|s| s.beats as f64 * tempo.meter().quarters_per_beat())
+                .sum::<f64>()
+                * repeat as f64;
+            let end = tempo.time_at(tempo.beat_at(start) + total);
+            obj.insert(
+                "phrase".into(),
+                serde_json::json!({
+                    "part": moodscore_engine::part_prefix(part),
+                    "starts_in": ((start - now).max(0.0) * 100.0).round() / 100.0,
+                    "seconds": ((end - start) * 100.0).round() / 100.0,
+                }),
+            );
+        }
+        Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
     }
 
     #[tool(

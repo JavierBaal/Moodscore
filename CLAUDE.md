@@ -11,7 +11,7 @@ All code, comments, docs, commit messages and issues are in English.
 ## Stack
 
 - DSP in Faust (`dsp/*.dsp`), compiled to Rust at build time
-- Rust workspace under `crates/`: `moodscore-dsp`, `moodscore-engine`, `moodscore-director`, `moodscore-mcp`, `moodscore` (binary)
+- Rust workspace under `crates/`: `moodscore-dsp` (Faust: drones, room), `moodscore-synth` (note voices, Rust), `moodscore-engine`, `moodscore-director`, `moodscore-mcp`, `moodscore` (binary)
 - Audio I/O: cpal. MCP: rmcp (official Rust SDK).
 
 ## Hard rules
@@ -19,7 +19,7 @@ All code, comments, docs, commit messages and issues are in English.
 1. **Audio thread is sacred.** No allocation, locks, I/O, logging or waiting inside the audio callback. Communicate only through preallocated lock-free queues.
 2. **No jumps.** Every parameter change goes through smoothing. A new gesture starts from the parameter's current value.
 3. **Macro mappings are data**, not code.
-4. **The DSP crate knows nothing about moods or MCP.** Keep layers separate: dsp ← engine ← director ← mcp.
+4. **The DSP and synth crates know nothing about moods or MCP.** Keep layers separate: dsp, synth ← engine ← director ← mcp.
 5. Keep the MCP API in `docs/MCP_TOOLS.md` in sync with the implementation.
 
 ## Commands

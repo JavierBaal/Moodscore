@@ -784,6 +784,33 @@ impl Director {
         self.lanes.iter().map(|l| l.out)
     }
 
+    /// Where a parameter is heading: the end of its gesture if it is under
+    /// manual or harmony control, its current value under the macros.
+    pub fn target(&self, id: usize) -> Option<f32> {
+        let lane = self.lanes.get(id)?;
+        Some(match lane.owner {
+            Owner::Manual | Owner::Harmony => lane.manual.target(),
+            Owner::Macros => lane.out,
+        })
+    }
+
+    /// Set several parameters by hand at once, each gliding over `over`
+    /// seconds (counts and choices switch). All or nothing: if one is
+    /// invalid, none changes.
+    pub fn set_params(
+        &mut self,
+        now: f64,
+        changes: &[(String, f32)],
+        over: f32,
+    ) -> Result<(), DirectorError> {
+        let mut trial = self.clone();
+        for (path, v) in changes {
+            trial.gesture(now, path, *v, over, Curve::EaseInOut, 0.0)?;
+        }
+        *self = trial;
+        Ok(())
+    }
+
     /// A report of everything that is moving, for the agent.
     pub fn state(&self, now: f64) -> State {
         let macros = self
@@ -1164,6 +1191,44 @@ impl Conductor {
     /// The tempo map in force.
     pub fn tempo(&self) -> TempoMap {
         *self.lock().tempo()
+    }
+
+    /// Set several parameters by hand at once (see [`Director::set_params`]).
+    pub fn set_params(&self, changes: &[(String, f32)], over: f32) -> Result<(), DirectorError> {
+        let now = self.now();
+        self.lock().set_params(now, changes, over)
+    }
+
+    /// Where each parameter in `ids` is heading.
+    pub fn targets(&self, ids: impl IntoIterator<Item = usize>) -> Vec<f32> {
+        let d = self.lock();
+        ids.into_iter()
+            .map(|id| d.target(id).unwrap_or(0.0))
+            .collect()
+    }
+
+    /// Play note events on `part`, each at a time on the director's clock
+    /// (see [`now`](Self::now)). Times already past play at once. The
+    /// engine starts each one on its exact sample, a few milliseconds after
+    /// the time asked for so that none arrives late. Returns how many were
+    /// queued (the rest did not fit).
+    pub fn schedule_notes(
+        &self,
+        part: usize,
+        events: &[(f64, moodscore_engine::NoteEvent)],
+    ) -> usize {
+        /// Headroom so the first note of a phrase is never late.
+        const MARGIN: f64 = 0.03;
+        let now = self.now();
+        let frame = self.engine.frames_rendered();
+        let sr = self.engine.sample_rate() as f64;
+        events
+            .iter()
+            .take_while(|(t, e)| {
+                let ahead = ((t - now).max(0.0) + MARGIN) * sr;
+                self.engine.note(part, frame + ahead as u64, *e)
+            })
+            .count()
     }
 
     pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {

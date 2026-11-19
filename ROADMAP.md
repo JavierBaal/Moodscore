@@ -28,7 +28,7 @@ The milestone that decides whether the idea works:
 **Agreed order from here (19 Nov 2026):**
 
 1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free, ready to be read from the audio thread by the step sequencer.
-2. The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
+2. ✅ The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
 3. Audition: Claude's ears (render, analyse, describe).
 4. Step sequencer: arpeggios and ostinatos played by the note voices.
 5. Chained sections: a cue list the engine runs on its own.
@@ -38,7 +38,7 @@ Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
 
 Sound:
 - [x] Six drone voices (A minor chord at rest, two sounding), with energy-based normalisation
-- [ ] Two note voices (melodic), driven by the synth engine below
+- [x] Two note voices (melodic), driven by the synth engine below (`note_1`, `note_2`; `patch`, `play_notes`)
 - All six mood macros with data-driven mappings
   - [x] `instability` (pitch drift and detune)
   - [x] Macros can share a parameter (`"mode": "add"`) and target many with `*` patterns
@@ -51,6 +51,8 @@ Harmony:
 - [ ] `tension` adds dissonance (suspensions, added ninths, clusters) on top of the harmony
 
 Synth engine for Claude (agreed with Fran on 19 Nov): a Serum/Vital-style synth designed for an agent to shape sounds with, as the engine of the two note voices (and, later, perhaps the drones):
+Done (core, `moodscore-synth`): everything in this list except true wavetables and the four remaining presets (soft pluck, glass bell, aggressive lead, note pad). Effects are per part (distortion, chorus, tempo-synced echo); the reverb is the shared room.
+
 - Oscillators: shape morphing (sine, triangle, saw, square, pulse width), FM between oscillators, sync, wavefolding, unison with detune and spread, sub and noise. Table-free to respect the no-locks rule; true wavetables later, written in Rust without locks.
 - Filters: low-pass, band-pass, high-pass, with drive.
 - Envelopes and LFOs, and a modulation matrix (any source to any parameter, a fixed number of slots).

@@ -6,14 +6,18 @@ Exits non-zero on any failure.
 """
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/release/moodscore"
 
+PRESETS = tempfile.mkdtemp(prefix="moodscore-presets-")
 proc = subprocess.Popen(
     [BIN, "serve", "--no-audio"],
+    env={**os.environ, "MOODSCORE_PRESETS": PRESETS},
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -72,7 +76,8 @@ send("notifications/initialized", notify=True)
 tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
-    tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state"},
+    tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state",
+             "patch", "play_notes", "list_presets", "save_preset"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -215,6 +220,45 @@ check(err and "between" in text, "bad bpm explained")
 err, text = call("harmony", {"key": "C", "progression": [{"chord": "I", "seconds": 2, "bars": 1}]})
 check(err and "only one" in text, "two lengths explained")
 call("harmony", {"stop": True})
+
+# Note parts: presets, patches, phrases.
+err, text = call("list_presets", {})
+names = [p["name"] for p in json.loads(text)["presets"]] if not err else []
+check(not err and {"pluck", "lead"} <= set(names), f"factory presets listed ({names})")
+err, text = call("patch", {"part": 1, "preset": "pluck"})
+r = json.loads(text) if not err else {}
+check(not err and r.get("preset") == "pluck" and "4 voices" in r.get("description", "") and not r.get("modified"),
+      f"pluck loaded ({text[:120]})")
+err, text = call("patch", {"part": 1, "set": {"filter/cutoff": 900, "mod2/source": "lfo1", "mod2/dest": "voice/pan", "mod2/amount": 0.4}})
+r = json.loads(text) if not err else {}
+check(not err and r.get("modified") and r["params"].get("filter/cutoff") == 900 and r["params"].get("mod2/source") == "lfo1",
+      f"patch set changes values ({text[:120]})")
+err, text = call("patch", {"set": {"filter/type": "notch"}})
+check(err and "low_pass" in text, f"bad choice explained: {text[:70]}")
+err, text = call("patch", {"part": 3})
+check(err and "1 or 2" in text, "bad part explained")
+st = json.loads(call("get_state", {})[1])
+check(not any(p["path"].startswith("note_") for p in st["params"]) and len(st["notes"]) == 2,
+      "get_state summarises the note parts instead of listing their parameters")
+err, text = call("play_notes", {"part": 1, "steps": [{"notes": "A3", "beats": 1}, {"notes": "C4 E4", "beats": 1}, {"notes": "rest"}]})
+r = json.loads(text) if not err else {}
+check(not err and r.get("phrase", {}).get("seconds", 0) > 0.5, f"phrase scheduled ({text[:100] if err else r.get('phrase')})")
+time.sleep(0.8)
+st = json.loads(call("get_state", {})[1])
+check(st["notes"][0]["sounding"] >= 1, f"notes sound ({st['notes'][0]})")
+err, text = call("play_notes", {"steps": [{"notes": "H3"}]})
+check(err and "not a note" in text, f"bad note explained: {text[:60]}")
+err, text = call("play_notes", {"steps": [{"notes": "A"}]})
+check(err and "octave" in text, "missing octave explained")
+err, text = call("save_preset", {"part": 1, "name": "Dark Pluck", "description": "A darker pluck."})
+check(not err and json.loads(text)["saved"] == "dark_pluck", f"preset saved ({text[:80]})")
+err, text = call("save_preset", {"name": "pluck", "description": "x"})
+check(err and "built-in" in text, "built-in names protected")
+err, text = call("patch", {"part": 2, "preset": "dark_pluck"})
+r = json.loads(text) if not err else {}
+check(not err and r.get("params", {}).get("filter/cutoff") == 900 and r.get("part") == "note_2", "saved preset loads on part 2")
+err, text = call("play_notes", {"stop": True})
+check(not err, "play_notes stop")
 
 err, text = call("release", {"over": 1, "start_in": 30})
 out = json.loads(text)["output"]

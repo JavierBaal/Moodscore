@@ -82,6 +82,53 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 - A new call replaces the plan and starts now from its first chord, voice-leading from wherever the voices are, so changing key or mode mid-piece is just another call. `{ "stop": true }` stops walking: voices stay on their notes and become free.
 - The state reports `harmony`: key, the chord sounding (`symbol`, `name`, `notes`), the `next` chord, `seconds_to_next`, `position` (e.g. `"2/4"`), `loop` and `pedal`.
 
+## Note parts ✅ Phase 2
+
+Two note parts, `note_1` and `note_2`, play notes over the drones: plucks, leads, motifs. Each is the same synth (`moodscore-synth`); the patch decides what it is. Notes share the drones' room (reverb), mono bass, master gain and soft clip.
+
+### `patch` ✅
+
+Shape a part's sound: load a preset, change parameters, or with neither just describe it.
+
+```json
+{ "part": 1, "preset": "pluck", "set": { "filter/cutoff": 900, "mod2/source": "lfo1", "mod2/dest": "voice/pan", "mod2/amount": 0.4 }, "over": 0 }
+```
+
+- `part`: `1` or `2` (or `"note_1"`, `"note_2"`). Default 1.
+- `preset`: loaded first; every parameter is set, so earlier tweaks don't linger.
+- `set`: path → value. Numbers, or choices by name. Continuous parameters glide over `over` seconds (default 0); counts and choices switch.
+- Returns the part's `description` (in words), every parameter that differs from the default (`params`, the same shape as a preset file), the `preset` loaded, whether it was `modified` since, and how many notes are `sounding`.
+
+The parameters (inside a part; as engine parameters they are `note_1/<path>`, so `gesture` can move them too, e.g. `note_1/part/expression`):
+
+| Group | Parameters |
+|---|---|
+| Oscillators | `osc1/…`, `osc2/…`: `level`, `shape` (0 sine, 1 triangle, 2 saw, 3 square; morphs in between), `pw`, `octave`, `semi`, `fine` (cents), `unison` (1–7), `detune` (cents), `spread` (stereo width), `sync` (1 = off; up to 8), `random_phase` |
+| Colour | `fm/amount` (osc2 modulates osc1), `sub/level`, `sub/octave`, `noise/level`, `shape/fold`, `shape/drive` |
+| Filter | `filter/type` (`low_pass`, `band_pass`, `high_pass`), `filter/slope` (12, 24), `filter/cutoff` (Hz), `filter/resonance`, `filter/keytrack`, `filter/env_amount` (octaves) |
+| Envelopes | `amp_env/…`, `filter_env/…`, `mod_env/…`: `attack`, `decay`, `sustain`, `release` (seconds; sustain 0–1); `amp_env/velocity` |
+| Playing | `part/voices` (1–4; 1 is monophonic), `part/legato`, `part/glide` (s), `part/expression` (a free control for the agent) |
+| LFOs | `lfo1/…`, `lfo2/…`: `shape` (`sine`, `triangle`, `saw`, `square`, `random`), `rate` (Hz), `sync`, `division` (`1/32` … `4`, with `t` triplets and `d` dotted), `delay`, `fade` (s), `retrigger` |
+| Modulation | `mod1/…` … `mod8/…`: `source` (`mod_env`, `filter_env`, `amp_env`, `lfo1`, `lfo2`, `velocity`, `note`, `random`, `expression`), `dest` (`pitch/bend`, `voice/gain`, `voice/pan`, the oscillators' `level`, `shape`, `pw`, `fine`, `detune`, `sync`, `fm/amount`, `sub/level`, `noise/level`, `shape/fold`, `shape/drive`, `filter/cutoff`, `filter/resonance`, `lfo1/rate`, `lfo2/rate`), `amount` (−1 … 1, a fraction of the target's range; of its octaves for frequencies; `pitch/bend` spans ±12 semitones, so 0.01 ≈ a quarter tone) |
+| Effects | `fx/distortion`, `fx/chorus_mix`, `fx/chorus_rate`, `fx/chorus_depth`, `fx/delay_mix`, `fx/delay_division`, `fx/delay_feedback`, `fx/delay_width`, `fx/delay_tone` (Hz) |
+| Mix | `part/level`, `part/pan`, `part/reverb_send` |
+
+### `play_notes` ✅
+
+Play a short phrase: to audition a patch, or to place a motif.
+
+```json
+{ "part": 1, "steps": [ { "notes": "A3", "beats": 0.5 }, { "notes": "C4 E4", "beats": 0.5, "velocity": 0.6 }, { "notes": "rest", "beats": 1 } ], "repeat": 4, "start_on": "bar" }
+```
+
+- `notes`: a note (`A3`; C4 is middle C), a chord (`"A3 C4 E4"`), a MIDI number, or `"rest"`. `beats` in the current metre (default 1), `velocity` 0–1 (default 0.8), `gate` the fraction held (default 0.9; above 1 overlaps the next note, so a legato patch slides).
+- Follows the tempo map (ramps included) and starts on each note's exact sample. `start_on`: `now`, `beat`, `bar`. `repeat` up to 16. `{ "stop": true }` releases the part.
+- Until the step sequencer arrives, this is how notes are played. The sequencer (arpeggios and ostinatos that follow the harmony) runs in the engine.
+
+### `list_presets` ✅ / `save_preset` ✅
+
+`list_presets` gives each preset's name, description and whether it is built in. `save_preset` (`part`, `name`, `description`, `overwrite`) saves a part's sound; it can't shadow a built-in name. Saved presets are JSON files in `MOODSCORE_PRESETS`, or the platform's data folder (`%APPDATA%\Moodscore\presets` on Windows, `~/Library/Application Support/Moodscore/presets` on macOS, `~/.local/share/moodscore/presets` elsewhere). Built-in presets live in `presets/` in the repository.
+
 ## Melody (planned, Phase 3)
 
 ### `melody`
@@ -211,7 +258,7 @@ Freeze everything at its current position (cancel pending gestures without jumpi
 
 ### `get_state` ✅ Phase 1
 
-The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). Voice states and changes the human made by hand arrive in later phases.
+The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
 
 ### `listen`
 

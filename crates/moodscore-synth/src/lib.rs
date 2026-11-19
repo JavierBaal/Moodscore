@@ -17,8 +17,10 @@ pub mod lfo;
 pub mod osc;
 pub mod params;
 pub mod part;
+pub mod preset;
 pub mod voice;
 
 pub use params::{Kind, ParamDef, Patch, P, PARAMS};
 pub use part::{Bus, Event, Part, MAX_VOICES};
+pub use preset::Preset;
 pub use voice::{Ctx, Voice};

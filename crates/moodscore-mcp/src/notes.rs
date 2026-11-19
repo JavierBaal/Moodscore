@@ -1,0 +1,252 @@
+//! The note parts as the agent sees them: presets, patches and phrases.
+
+use std::path::PathBuf;
+
+use moodscore_director::harmony::parse_note;
+use moodscore_director::{Conductor, TempoMap};
+use moodscore_engine::{part_prefix, synth_params, NoteEvent, PARTS};
+use moodscore_synth::preset::{self, Preset};
+use moodscore_synth::Patch;
+use serde::Serialize;
+use serde_json::{Map, Value};
+
+/// Where saved presets go: `MOODSCORE_PRESETS`, or the platform's data folder.
+pub fn user_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("MOODSCORE_PRESETS") {
+        return Some(PathBuf::from(d));
+    }
+    if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("Moodscore").join("presets"))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library/Application Support/Moodscore")
+                .join("presets")
+        })
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .map(|d| d.join("moodscore").join("presets"))
+    }
+}
+
+/// Factory presets, then the user's (a user preset can't shadow a factory one).
+pub fn all_presets() -> Vec<(Preset, bool)> {
+    let mut all: Vec<(Preset, bool)> = Preset::factory().into_iter().map(|p| (p, true)).collect();
+    if let Some(dir) = user_dir() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut files: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            files.sort();
+            for f in files {
+                if f.extension().is_some_and(|e| e == "json") {
+                    if let Ok(p) = std::fs::read_to_string(&f)
+                        .map_err(|e| e.to_string())
+                        .and_then(|s| Preset::parse(&s))
+                    {
+                        if !all
+                            .iter()
+                            .any(|(q, _)| q.name.eq_ignore_ascii_case(&p.name))
+                        {
+                            all.push((p, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    all
+}
+
+pub fn find_preset(name: &str) -> Result<Preset, String> {
+    let all = all_presets();
+    all.iter()
+        .find(|(p, _)| p.name.eq_ignore_ascii_case(name.trim()))
+        .map(|(p, _)| p.clone())
+        .ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|(p, _)| p.name.as_str()).collect();
+            format!("no preset called '{name}'; there are: {}", names.join(", "))
+        })
+}
+
+/// "1", "2", "note_1", "note_2" → part index.
+pub fn part_index(arg: Option<&Value>) -> Result<usize, String> {
+    let bad = || "part must be 1 or 2 (or \"note_1\", \"note_2\")".to_string();
+    let n = match arg {
+        None | Some(Value::Null) => 1,
+        Some(Value::Number(n)) => n.as_u64().ok_or_else(bad)? as usize,
+        Some(Value::String(s)) => s
+            .trim()
+            .trim_start_matches("note_")
+            .parse::<usize>()
+            .map_err(|_| bad())?,
+        _ => return Err(bad()),
+    };
+    if !(1..=PARTS).contains(&n) {
+        return Err(bad());
+    }
+    Ok(n - 1)
+}
+
+/// What the conductor holds for a part, as a patch.
+pub fn current_patch(c: &Conductor, part: usize) -> Patch {
+    let e = c.engine();
+    let ids: Vec<usize> = synth_params::PARAMS
+        .iter()
+        .map(|d| e.part_param_id(part, d.path).unwrap_or(0))
+        .collect();
+    Patch(c.targets(ids))
+}
+
+/// The changes, as (full path, value) pairs for the conductor.
+pub fn to_changes(part: usize, values: &[(String, f32)]) -> Vec<(String, f32)> {
+    let prefix = part_prefix(part);
+    values
+        .iter()
+        .map(|(p, v)| (format!("{prefix}/{p}"), *v))
+        .collect()
+}
+
+/// Parse a `set` object: path → number or choice name.
+pub fn parse_set(set: &Map<String, Value>) -> Result<Vec<(String, f32)>, String> {
+    set.iter()
+        .map(|(k, v)| {
+            let path = k.trim();
+            preset::parse_value(path, v).map(|x| (path.to_string(), x))
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+pub struct PartReport {
+    pub part: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// True if the patch differs from the preset loaded.
+    pub modified: bool,
+    pub sounding: usize,
+    pub description: String,
+    /// Every parameter that differs from the default patch.
+    pub params: Map<String, Value>,
+}
+
+/// Brief per-part status for every report.
+#[derive(Serialize)]
+pub struct PartStatus {
+    pub part: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    pub modified: bool,
+    pub sounding: usize,
+}
+
+pub fn status(c: &Conductor, part: usize, loaded: &Option<(String, Patch)>) -> PartStatus {
+    let patch = current_patch(c, part);
+    PartStatus {
+        part: part_prefix(part),
+        preset: loaded.as_ref().map(|(n, _)| n.clone()),
+        modified: loaded.as_ref().is_some_and(|(_, p)| differs(p, &patch)),
+        sounding: c.engine().active_notes(part),
+    }
+}
+
+pub fn report(c: &Conductor, part: usize, loaded: &Option<(String, Patch)>) -> PartReport {
+    let patch = current_patch(c, part);
+    let s = status(c, part, loaded);
+    PartReport {
+        part: s.part,
+        preset: s.preset,
+        modified: s.modified,
+        sounding: s.sounding,
+        description: preset::describe(&patch),
+        params: preset::changed(&patch),
+    }
+}
+
+fn differs(a: &Patch, b: &Patch) -> bool {
+    a.0.iter()
+        .zip(&b.0)
+        .any(|(x, y)| (x - y).abs() > 1e-4 * x.abs().max(1.0))
+}
+
+/// A preset name that is safe as a file name.
+pub fn check_name(name: &str) -> Result<String, String> {
+    let n = name.trim().to_ascii_lowercase().replace(' ', "_");
+    if n.is_empty()
+        || n.len() > 40
+        || !n
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err("a preset name uses letters, digits, spaces, _ or - (up to 40)".into());
+    }
+    Ok(n)
+}
+
+/// One step of a phrase.
+pub struct Step {
+    /// MIDI notes (empty = rest).
+    pub notes: Vec<u8>,
+    /// Beats of the metre.
+    pub beats: f32,
+    pub velocity: f32,
+    pub gate: f32,
+}
+
+/// "A3", "C#4 E4 G#4", "60", "rest" → MIDI notes.
+pub fn parse_notes(s: &str) -> Result<Vec<u8>, String> {
+    let t = s.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("rest") || t == "-" {
+        return Ok(Vec::new());
+    }
+    t.split([' ', ',', '+'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            if let Ok(m) = w.parse::<u8>() {
+                return if m <= 127 {
+                    Ok(m)
+                } else {
+                    Err(format!("note {m} is out of range"))
+                };
+            }
+            let n = parse_note(w).map_err(|e| e.to_string())?;
+            n.midi
+                .ok_or_else(|| format!("'{w}': give the octave too, e.g. A3 (C4 is middle C)"))
+        })
+        .collect()
+}
+
+/// Turn a phrase into timed note events on the director's clock, starting
+/// at `start` (seconds), repeated `repeat` times, following `tempo`.
+pub fn schedule(
+    tempo: &TempoMap,
+    start: f64,
+    steps: &[Step],
+    repeat: u32,
+) -> Vec<(f64, NoteEvent)> {
+    let qpb = tempo.meter().quarters_per_beat();
+    let mut b = tempo.beat_at(start);
+    // (time, order, event): offs sort before ons at the same instant.
+    let mut out: Vec<(f64, u8, NoteEvent)> = Vec::new();
+    for _ in 0..repeat {
+        for s in steps {
+            let q = s.beats as f64 * qpb;
+            let on_t = tempo.time_at(b);
+            let off_t = tempo.time_at(b + q * s.gate as f64);
+            for &note in &s.notes {
+                out.push((
+                    on_t,
+                    1,
+                    NoteEvent::NoteOn {
+                        note,
+                        velocity: s.velocity,
+                    },
+                ));
+                out.push((off_t, 0, NoteEvent::NoteOff { note }));
+            }
+            b += q;
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    out.into_iter().map(|(t, _, e)| (t, e)).collect()
+}

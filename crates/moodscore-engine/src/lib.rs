@@ -690,6 +690,54 @@ mod tests {
         assert!(h.part_param_id(0, "nope").is_none());
     }
 
+    #[test]
+    fn presets_sit_well_over_the_drones() {
+        for preset in moodscore_synth::Preset::factory() {
+            let (h, mut r) = new(SR);
+            h.fade_to(1.0, 0.05);
+            for (id, v) in preset.patch.0.iter().enumerate() {
+                h.set_target(
+                    h.part_param_id(0, synth_params::PARAMS[id].path).unwrap(),
+                    *v,
+                );
+            }
+            run(&mut r, 2.0);
+            let (dl, _) = stereo(&mut r, 96_000);
+            let base = h.frames_rendered();
+            for (i, note) in [57u8, 60, 64, 69, 72, 69, 64, 60].into_iter().enumerate() {
+                let at = base + i as u64 * 12_000;
+                h.note(
+                    0,
+                    at,
+                    NoteEvent::NoteOn {
+                        note,
+                        velocity: 0.9,
+                    },
+                );
+                h.note(0, at + 10_000, NoteEvent::NoteOff { note });
+            }
+            let (l, rr) = stereo(&mut r, 96_000);
+            // Level above 300 Hz, where the notes live and the drones thin out.
+            let rms = |x: &[f32]| {
+                let c = (-std::f32::consts::TAU * 300.0 / SR as f32).exp();
+                let (mut lp, mut e) = (0.0f32, 0.0f32);
+                for &s in x {
+                    lp = s + (lp - s) * c;
+                    e += (s - lp) * (s - lp);
+                }
+                (e / x.len() as f32).sqrt()
+            };
+            let peak = l.iter().chain(&rr).fold(0.0f32, |m, s| m.max(s.abs()));
+            let lift = 20.0 * (rms(&l) / rms(&dl)).log10();
+            println!(
+                "{} over the drones: +{lift:.1} dB, peak {peak:.2}",
+                preset.name
+            );
+            assert!(peak < 0.9, "{} peaks at {peak}", preset.name);
+            assert!(lift > 2.0, "{} barely heard (+{lift:.1} dB)", preset.name);
+        }
+    }
+
     /// Real-time cost with both parts fully loaded (run with --ignored --nocapture).
     #[test]
     #[ignore]

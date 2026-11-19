@@ -592,6 +592,7 @@ version = "0.0.1"
 dependencies = [
  "moodscore-director",
  "moodscore-engine",
+ "moodscore-synth",
  "rmcp",
  "schemars",
  "serde",
@@ -602,6 +603,10 @@ dependencies = [
 [[package]]
 name = "moodscore-synth"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "ndk"
