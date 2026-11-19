@@ -25,10 +25,26 @@ The milestone that decides whether the idea works:
 
 ## Phase 2: The instrument
 
+Sound:
 - Six drone voices and two melodic voices
-- All six mood macros with data-driven mappings
+- All six mood macros with data-driven mappings, starting with `instability` and `tension`
+
+Pace and time:
+- `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it
+- Tempo clock with tempo gestures: accelerando and ritardando glide like everything else, never jump
+- Tempo-synced modulation: LFOs, filter pulsing, delays
+
+Pulse (cinematic rhythm, not a drum machine):
+- One pulse voice: synthetic percussive generator, from a low heartbeat to a metallic hit, long tails welcome
+- Step sequencer, 1–16 steps: triggers pulses, or modulates the drone's pitch and filter (in the spirit of the Solar 42F's sequencer)
+- The agent sets patterns; the engine plays them sample-accurately
+- `urgency` macro: pulse density, tempo and tension together ("time is running out")
+
+Session:
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library
 - `voice`, `hold`, `panic`
+
+Out of scope: full drum kits and groove programming. That's composition, and belongs in a DAW (or Four Hands Studio); Moodscore may share a clock with it later.
 
 ## Phase 3: Listening
 
@@ -53,3 +69,4 @@ The milestone that decides whether the idea works:
 - VST3 / CLAP plugin builds
 - Live DSP editing via Faust JIT
 - MIDI and OSC in/out
+- Clock sync with other tools (Ableton Link, MIDI clock)

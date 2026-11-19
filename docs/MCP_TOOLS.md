@@ -37,6 +37,39 @@ Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should
 
 `over` defaults to 8 seconds.
 
+### `set_pace` (planned, Phase 2)
+
+Set the default transition time and shape for every tool call that doesn't specify its own.
+
+```json
+{ "over": 30, "curve": "ease_in_out" }
+```
+
+## Time and pulse (planned, Phase 2)
+
+### `tempo`
+
+Set or glide the tempo. Glides are gestures: an accelerando is `tempo` with `over`.
+
+```json
+{ "bpm": 90, "over": 120, "curve": "ease_in" }
+```
+
+### `pulse`
+
+Set the pulse voice's step pattern and sound. Patterns loop in time with the tempo; the engine plays them sample-accurately.
+
+```json
+{
+  "steps": [1, 0, 0, 0, 1, 0, 0, 0],
+  "sound": "heartbeat",
+  "level": 0.6,
+  "over": 8
+}
+```
+
+A step value is the hit's velocity (`0` = rest). The sequencer can also target the drone instead of triggering hits (e.g. stepping the filter).
+
 ## Mood
 
 ### `morph` ✅ Phase 1
@@ -52,7 +85,7 @@ Move one or more mood macros toward new values. Parameters a macro drives come b
 }
 ```
 
-Macros: `darkness` (Phase 1); `tension`, `density`, `motion`, `distance`, `instability` (Phase 2). Omitted macros keep moving (or stay) as they were.
+Macros: `darkness` (Phase 1); `tension`, `density`, `motion`, `distance`, `instability`, `urgency` (Phase 2). Omitted macros keep moving (or stay) as they were.
 
 ### `set_scene`
 
