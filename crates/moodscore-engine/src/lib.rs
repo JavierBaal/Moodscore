@@ -38,6 +38,9 @@ pub const MIN_FADE_SECONDS: f32 = 0.05;
 
 /// Integration time of the RMS meter, in seconds.
 const RMS_SECONDS: f32 = 0.3;
+/// Peak hold: the peak meter falls by about 8.7 dB per this many seconds
+/// (exponential release), like any ordinary peak meter.
+const PEAK_RELEASE_SECONDS: f32 = 1.0;
 
 /// State shared between the audio thread and control threads. Atomics only.
 struct Shared {
@@ -65,7 +68,8 @@ impl Shared {
 /// Output levels as measured after the DSP.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Levels {
-    /// Peak of the most recent chunk, linear (0..1).
+    /// Peak with a 1 s release, linear (0..1). Never below the RMS of a
+    /// steady signal, unlike the peak of a single short chunk.
     pub peak: f32,
     /// RMS over roughly the last 300 ms, linear (0..1).
     pub rms: f32,
@@ -179,6 +183,8 @@ pub struct Renderer {
     fade: f32,
     rms_sq: f32,
     rms_coef: f32,
+    peak_hold: f32,
+    peak_release: f32,
     left: [f32; CHUNK],
     right: [f32; CHUNK],
 }
@@ -222,6 +228,8 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         fade: 0.0,
         rms_sq: 0.0,
         rms_coef: 1.0 - (-chunk_seconds / RMS_SECONDS).exp(),
+        peak_hold: 0.0,
+        peak_release: (-chunk_seconds / PEAK_RELEASE_SECONDS).exp(),
         left: [0.0; CHUNK],
         right: [0.0; CHUNK],
     };
@@ -306,7 +314,14 @@ impl Renderer {
         self.rms_sq += (mean_sq - self.rms_sq) * self.rms_coef;
 
         Shared::store_f32(&self.shared.fade_current, self.fade);
-        Shared::store_f32(&self.shared.peak, peak);
+        // Exact digital silence (released, or not started) reads as silence
+        // at once rather than as a falling peak.
+        self.peak_hold = if peak == 0.0 {
+            0.0
+        } else {
+            peak.max(self.peak_hold * self.peak_release)
+        };
+        Shared::store_f32(&self.shared.peak, self.peak_hold);
         Shared::store_f32(&self.shared.rms, self.rms_sq.sqrt());
         self.shared.frames.fetch_add(n as u64, Ordering::Relaxed);
     }
@@ -411,6 +426,19 @@ mod tests {
         let lv = h.levels();
         assert!(lv.rms > 0.01 && lv.peak >= lv.rms);
         assert_eq!(h.frames_rendered(), 2 * SR as u64);
+    }
+
+    #[test]
+    fn the_peak_meter_holds_but_silence_reads_as_silence() {
+        let (h, mut r) = new(SR);
+        for _ in 0..20 {
+            run(&mut r, 0.1);
+            let lv = h.levels();
+            assert!(lv.peak >= lv.rms, "peak {} below rms {}", lv.peak, lv.rms);
+        }
+        h.fade_to(0.0, 0.0);
+        run(&mut r, 0.2);
+        assert_eq!(h.levels().peak, 0.0);
     }
 
     #[test]
