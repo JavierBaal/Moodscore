@@ -9,4 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 moodscore-dsp.workspace = true
+moodscore-synth.workspace = true
+rtrb.workspace = true
 cpal.workspace = true

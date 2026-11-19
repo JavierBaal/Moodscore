@@ -31,11 +31,17 @@ use generated::MoodscoreDsp;
 /// Number of audio outputs (stereo).
 pub const NUM_OUTPUTS: usize = 2;
 
+/// Number of audio inputs: the note voices' dry sound (left, right) and
+/// their reverb send (left, right).
+pub const NUM_INPUTS: usize = 4;
+
 /// How a parameter's range is meant to be traversed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Scale {
     Linear,
     Log,
+    /// Whole steps (a count or a choice): set, never glided.
+    Discrete,
 }
 
 /// Description of one DSP parameter, as declared in the Faust source.
@@ -50,6 +56,30 @@ pub struct ParamInfo {
     pub unit: Option<String>,
     pub scale: Scale,
     index: ParamIndex,
+}
+
+impl ParamInfo {
+    /// A parameter that lives outside the Faust DSP (the note synth's).
+    /// [`Dsp::set`] ignores it; the engine routes it.
+    pub fn external(
+        path: String,
+        init: f32,
+        min: f32,
+        max: f32,
+        unit: Option<String>,
+        scale: Scale,
+    ) -> Self {
+        Self {
+            path,
+            init,
+            min,
+            max,
+            step: if scale == Scale::Discrete { 1.0 } else { 0.0 },
+            unit,
+            scale,
+            index: ParamIndex(-1),
+        }
+    }
 }
 
 /// The Moodscore DSP: parameters in, stereo audio out.
@@ -108,14 +138,39 @@ impl Dsp {
             .and_then(|p| FaustDsp::get_param(&*self.inner, p.index))
     }
 
-    /// Render one block of stereo audio. Real-time safe.
+    /// Render one block of stereo audio with no notes. Real-time safe.
     ///
     /// Both buffers must have the same length; that length is the block size.
     pub fn compute(&mut self, left: &mut [f32], right: &mut [f32]) {
+        const SILENCE: [f32; 256] = [0.0; 256];
+        let n = left.len();
+        let mut start = 0;
+        while start < n {
+            let m = (n - start).min(SILENCE.len());
+            let z = &SILENCE[..m];
+            let (l, r) = (&mut left[start..start + m], &mut right[start..start + m]);
+            self.compute_with([z, z, z, z], l, r);
+            start += m;
+        }
+    }
+
+    /// Render one block of stereo audio, mixing in the note voices: their
+    /// dry sound (left, right) and their reverb send (left, right), each as
+    /// long as the output. Real-time safe.
+    pub fn compute_with(
+        &mut self,
+        notes: [&[f32]; NUM_INPUTS],
+        left: &mut [f32],
+        right: &mut [f32],
+    ) {
         assert_eq!(left.len(), right.len(), "channel buffers differ in length");
+        assert!(
+            notes.iter().all(|b| b.len() == left.len()),
+            "input length differs"
+        );
         let frames = left.len() as i32;
         let mut outputs: [&mut [f32]; NUM_OUTPUTS] = [left, right];
-        FaustDsp::compute(&mut *self.inner, frames, &[], &mut outputs);
+        FaustDsp::compute(&mut *self.inner, frames, &notes, &mut outputs);
     }
 }
 

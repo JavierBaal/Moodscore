@@ -11,14 +11,40 @@
 //!
 //! [`audio::start_default_output`] wires a [`Renderer`] to the system's
 //! default audio device.
+//!
+//! The parameters are the Faust DSP's (the drones and the room) followed by
+//! the two note parts' (`note_1/…`, `note_2/…`, from `moodscore-synth`).
+//! Notes travel to the audio thread through a lock-free queue, each stamped
+//! with the frame it belongs to, and start on that exact sample.
 
 pub mod audio;
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use moodscore_dsp::Dsp;
 pub use moodscore_dsp::{ParamInfo, Scale};
+pub use moodscore_synth::{params as synth_params, Event as NoteEvent};
+use moodscore_synth::{Bus, Part};
+
+/// Number of note parts.
+pub const PARTS: usize = 2;
+
+/// Notes that can wait in the queue for the audio thread.
+const NOTE_QUEUE: usize = 1024;
+
+/// A note event for a part, due at an absolute frame.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct NoteMsg {
+    pub part: usize,
+    pub frame: u64,
+    pub event: NoteEvent,
+}
+
+/// The path prefix of a part's parameters: `note_1`, `note_2`.
+pub fn part_prefix(part: usize) -> String {
+    format!("note_{}", part + 1)
+}
 
 /// Frames rendered between parameter updates (≈0.7 ms at 48 kHz).
 pub const CHUNK: usize = 32;
@@ -54,6 +80,10 @@ struct Shared {
     fade_step: AtomicU32,
     /// Current output gain, as last rendered.
     fade_current: AtomicU32,
+    /// Tempo for the note parts (synced LFOs and echoes), quarters per second.
+    tempo: AtomicU32,
+    /// Notes sounding in each part.
+    voices: [AtomicU32; PARTS],
 }
 
 impl Shared {
@@ -98,6 +128,9 @@ pub struct EngineHandle {
     shared: Arc<Shared>,
     params: Arc<[ParamInfo]>,
     sample_rate: u32,
+    notes: Arc<Mutex<rtrb::Producer<NoteMsg>>>,
+    /// Id of each part's first parameter.
+    part_base: [usize; PARTS],
 }
 
 impl EngineHandle {
@@ -168,16 +201,56 @@ impl EngineHandle {
     pub fn frames_rendered(&self) -> u64 {
         self.shared.frames.load(Ordering::Relaxed)
     }
+
+    /// Queue a note event for `part`, to happen at `frame` (frames past are
+    /// played at once). Returns false if the queue is full.
+    pub fn note(&self, part: usize, frame: u64, event: NoteEvent) -> bool {
+        if part >= PARTS {
+            return false;
+        }
+        let mut q = self.notes.lock().unwrap_or_else(|e| e.into_inner());
+        q.push(NoteMsg { part, frame, event }).is_ok()
+    }
+
+    /// Tempo for the note parts, in quarter notes per second.
+    pub fn set_tempo(&self, quarters_per_second: f32) {
+        if quarters_per_second.is_finite() && quarters_per_second > 0.0 {
+            Shared::store_f32(&self.shared.tempo, quarters_per_second);
+        }
+    }
+
+    /// Notes sounding (held or ringing out) in `part`.
+    pub fn active_notes(&self, part: usize) -> usize {
+        self.shared
+            .voices
+            .get(part)
+            .map_or(0, |v| v.load(Ordering::Relaxed) as usize)
+    }
+
+    /// The id of a part's parameter, by its path inside the part (`"filter/cutoff"`).
+    pub fn part_param_id(&self, part: usize, path: &str) -> Option<usize> {
+        let local = synth_params::find(path)?;
+        self.part_base.get(part).map(|b| b + local)
+    }
 }
 
 /// Audio-thread half of the engine. Owns the DSP.
 pub struct Renderer {
     dsp: Dsp,
+    parts: [Part; PARTS],
+    /// Number of Faust parameters; the parts' follow.
+    faust_params: usize,
+    notes: rtrb::Consumer<NoteMsg>,
+    /// Notes received but not yet due. Preallocated; never grows.
+    pending: Vec<NoteMsg>,
+    frame: u64,
+    note_buf: [[f32; CHUNK]; 4],
     shared: Arc<Shared>,
     /// Current (smoothed) value of each parameter, in the smoothing domain:
     /// natural log for log-scale parameters, the plain value otherwise.
     current: Box<[f32]>,
     log_domain: Box<[bool]>,
+    discrete: Box<[bool]>,
     smoothing_coef: f32,
     primed: bool,
     fade: f32,
@@ -194,7 +267,30 @@ pub struct Renderer {
 /// Allocates: call this before audio starts, never on the audio thread.
 pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
     let dsp = Dsp::new(sample_rate);
-    let params: Arc<[ParamInfo]> = dsp.params().to_vec().into();
+    let faust_params = dsp.params().len();
+    let mut all = dsp.params().to_vec();
+    let mut part_base = [0; PARTS];
+    for (part, base) in part_base.iter_mut().enumerate() {
+        *base = all.len();
+        let prefix = part_prefix(part);
+        for d in synth_params::PARAMS {
+            let scale = match d.kind {
+                synth_params::Kind::Log => Scale::Log,
+                synth_params::Kind::Linear => Scale::Linear,
+                _ => Scale::Discrete,
+            };
+            all.push(ParamInfo::external(
+                format!("{prefix}/{}", d.path),
+                d.init,
+                d.min,
+                d.max,
+                d.unit.map(str::to_string),
+                scale,
+            ));
+        }
+    }
+    let params: Arc<[ParamInfo]> = all.into();
+    let (producer, consumer) = rtrb::RingBuffer::new(NOTE_QUEUE);
 
     let targets: Box<[AtomicU32]> = params
         .iter()
@@ -208,21 +304,34 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         fade_target: AtomicU32::new(1f32.to_bits()),
         fade_step: AtomicU32::new((1.0 / (FADE_IN_SECONDS * sample_rate as f32)).to_bits()),
         fade_current: AtomicU32::new(0f32.to_bits()),
+        tempo: AtomicU32::new(2f32.to_bits()),
+        voices: Default::default(),
     });
 
     let log_domain: Box<[bool]> = params
         .iter()
         .map(|p| p.scale == Scale::Log && p.min > 0.0)
         .collect();
+    let discrete: Box<[bool]> = params.iter().map(|p| p.scale == Scale::Discrete).collect();
     let current = vec![0.0; params.len()].into_boxed_slice();
 
     let sr = sample_rate as f32;
     let chunk_seconds = CHUNK as f32 / sr;
     let renderer = Renderer {
         dsp,
+        parts: [
+            Part::new(sample_rate, 0x5eed),
+            Part::new(sample_rate, 0xbeef),
+        ],
+        faust_params,
+        notes: consumer,
+        pending: Vec::with_capacity(NOTE_QUEUE),
+        frame: 0,
+        note_buf: [[0.0; CHUNK]; 4],
         shared: shared.clone(),
         current,
         log_domain,
+        discrete,
         smoothing_coef: 1.0 - (-chunk_seconds / SMOOTHING_SECONDS).exp(),
         primed: false,
         fade: 0.0,
@@ -237,6 +346,8 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         shared,
         params,
         sample_rate,
+        notes: Arc::new(Mutex::new(producer)),
+        part_base,
     };
     (handle, renderer)
 }
@@ -290,8 +401,11 @@ impl Renderer {
     fn render_chunk(&mut self, n: usize) {
         self.update_params();
 
+        self.render_notes(n);
+        let [a, b, c, d] = &self.note_buf;
         let (l, r) = (&mut self.left[..n], &mut self.right[..n]);
-        self.dsp.compute(l, r);
+        self.dsp
+            .compute_with([&a[..n], &b[..n], &c[..n], &d[..n]], l, r);
 
         let fade_target = Shared::load_f32(&self.shared.fade_target);
         let fade_step = Shared::load_f32(&self.shared.fade_step);
@@ -323,7 +437,54 @@ impl Renderer {
         };
         Shared::store_f32(&self.shared.peak, self.peak_hold);
         Shared::store_f32(&self.shared.rms, self.rms_sq.sqrt());
+        self.frame += n as u64;
         self.shared.frames.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// Run the note parts for the next `n` frames into `note_buf`, playing
+    /// every note due in that span on its own frame.
+    fn render_notes(&mut self, n: usize) {
+        while let Ok(m) = self.notes.pop() {
+            if self.pending.len() < self.pending.capacity() {
+                self.pending.push(m);
+            }
+        }
+        let tempo = Shared::load_f32(&self.shared.tempo);
+        for b in &mut self.note_buf {
+            b[..n].fill(0.0);
+        }
+        let end = self.frame + n as u64;
+        for (p, part) in self.parts.iter_mut().enumerate() {
+            part.set_tempo(tempo);
+            // Due events for this part, in arrival order, at their offsets.
+            let mut due = [(0usize, NoteEvent::AllOff); 64];
+            let mut count = 0;
+            let mut i = 0;
+            while i < self.pending.len() {
+                let m = self.pending[i];
+                if m.part == p && m.frame < end && count < due.len() {
+                    due[count] = (m.frame.saturating_sub(self.frame) as usize, m.event);
+                    count += 1;
+                    // Keep the rest in order (no allocation).
+                    self.pending.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+            // Stable sort by offset: same-frame events keep their order.
+            due[..count].sort_by_key(|&(t, _)| t);
+            let [dl, dr, sl, sr] = &mut self.note_buf;
+            part.render_bus(
+                &due[..count],
+                Bus {
+                    dry_l: &mut dl[..n],
+                    dry_r: &mut dr[..n],
+                    send_l: &mut sl[..n],
+                    send_r: &mut sr[..n],
+                },
+            );
+            self.shared.voices[p].store(part.active_voices() as u32, Ordering::Relaxed);
+        }
     }
 
     fn update_params(&mut self) {
@@ -335,14 +496,21 @@ impl Renderer {
                 target
             };
             let cur = &mut self.current[id];
-            if self.primed {
+            if self.primed && !self.discrete[id] {
                 *cur += (t - *cur) * self.smoothing_coef;
             } else {
-                // Nothing has sounded yet: start exactly at the targets.
+                // Nothing has sounded yet, or a count or choice (which has
+                // nothing in between): take the target as is.
                 *cur = t;
             }
             let value = if self.log_domain[id] { cur.exp() } else { *cur };
-            self.dsp.set(id, value);
+            if id < self.faust_params {
+                self.dsp.set(id, value);
+            } else {
+                let local = id - self.faust_params;
+                let n = synth_params::PARAMS.len();
+                self.parts[local / n].set(local % n, value);
+            }
         }
         self.primed = true;
     }
@@ -439,6 +607,125 @@ mod tests {
         h.fade_to(0.0, 0.0);
         run(&mut r, 0.2);
         assert_eq!(h.levels().peak, 0.0);
+    }
+
+    /// An engine with the drones silent and the fade-in done.
+    fn quiet(sr: u32) -> (EngineHandle, Renderer) {
+        let (h, mut r) = new(sr);
+        for v in ["drone_1/level", "drone_2/level"] {
+            h.set_target(h.param_id(v).unwrap(), 0.0);
+        }
+        h.fade_to(1.0, 0.05);
+        run(&mut r, 1.0);
+        (h, r)
+    }
+
+    fn stereo(r: &mut Renderer, frames: usize) -> (Vec<f32>, Vec<f32>) {
+        let mut a = vec![0.0; frames];
+        let mut b = vec![0.0; frames];
+        r.render(&mut a, &mut b);
+        (a, b)
+    }
+
+    #[test]
+    fn notes_start_on_their_frame() {
+        let on = NoteEvent::NoteOn {
+            note: 57,
+            velocity: 0.8,
+        };
+        let (h1, mut r1) = quiet(SR);
+        let (h2, mut r2) = quiet(SR);
+        let base = h1.frames_rendered();
+        assert!(h1.note(0, base + 1000, on));
+        assert!(h2.note(0, base + 1100, on));
+        let (a, _) = stereo(&mut r1, 9600);
+        let (b, _) = stereo(&mut r2, 9600);
+        assert!(
+            a[..1000].iter().all(|s| s.abs() < 1e-7),
+            "silent before the note"
+        );
+        assert!(
+            a[1000..1100].iter().any(|s| s.abs() > 1e-4),
+            "sounds from its frame"
+        );
+        for k in 0..8000 {
+            assert!((a[1000 + k] - b[1100 + k]).abs() < 1e-6, "frame {k}");
+        }
+        assert_eq!(h1.active_notes(0), 1);
+        assert_eq!(h1.active_notes(1), 0);
+    }
+
+    #[test]
+    fn notes_sit_in_the_centre_of_the_room() {
+        let (h, mut r) = quiet(SR);
+        h.set_target(h.part_param_id(0, "part/reverb_send").unwrap(), 0.6);
+        let base = h.frames_rendered();
+        for (i, note) in [45u8, 52, 57, 60, 64, 69, 72, 76].into_iter().enumerate() {
+            let at = base + i as u64 * 9600;
+            h.note(
+                0,
+                at,
+                NoteEvent::NoteOn {
+                    note,
+                    velocity: 0.8,
+                },
+            );
+            h.note(0, at + 7200, NoteEvent::NoteOff { note });
+        }
+        let (l, rr) = stereo(&mut r, 96_000);
+        let e = |x: &[f32]| x.iter().map(|s| s * s).sum::<f32>();
+        let db = 10.0 * (e(&l) / e(&rr)).log10();
+        assert!(db.abs() < 0.5, "notes lean {db:.2} dB");
+        assert!(e(&l) > 1.0, "notes sound");
+    }
+
+    #[test]
+    fn note_parameters_are_engine_parameters() {
+        let (h, _r) = new(SR);
+        let id = h.part_param_id(1, "filter/cutoff").unwrap();
+        assert_eq!(h.params()[id].path, "note_2/filter/cutoff");
+        assert_eq!(h.params()[id].scale, Scale::Log);
+        let v = h.part_param_id(0, "part/voices").unwrap();
+        assert_eq!(h.params()[v].scale, Scale::Discrete);
+        assert!(h.part_param_id(0, "nope").is_none());
+    }
+
+    /// Real-time cost with both parts fully loaded (run with --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn cost_with_both_parts_full() {
+        let (h, mut r) = new(SR);
+        for part in 0..PARTS {
+            for (p, v) in [
+                ("osc1/unison", 7.0),
+                ("osc2/unison", 7.0),
+                ("osc2/level", 0.6),
+                ("fx/chorus_mix", 0.5),
+                ("fx/delay_mix", 0.4),
+                ("shape/drive", 0.4),
+                ("filter/slope", 24.0),
+            ] {
+                h.set_target(h.part_param_id(part, p).unwrap(), v);
+            }
+            for k in 0..4 {
+                h.note(
+                    part,
+                    0,
+                    NoteEvent::NoteOn {
+                        note: 48 + 7 * k as u8,
+                        velocity: 1.0,
+                    },
+                );
+            }
+        }
+        run(&mut r, 0.1);
+        let t = std::time::Instant::now();
+        run(&mut r, 10.0);
+        let share = t.elapsed().as_secs_f64() / 10.0;
+        println!(
+            "engine with 8 heavy notes: {:.1}% of one core",
+            share * 100.0
+        );
     }
 
     #[test]

@@ -209,3 +209,94 @@ fn matrix_routes_expression_and_velocity() {
     assert!(brightness(0.0, 1.0) > 3.0 * brightness(0.0, 0.0));
     assert!(find("pitch/bend").is_some());
 }
+
+fn render_lr(part: &mut Part, events: &[(usize, Event)], frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut l = vec![0.0; frames];
+    let mut r = vec![0.0; frames];
+    part.render(events, &mut l, &mut r);
+    (l, r)
+}
+
+fn energy(x: &[f32]) -> f32 {
+    x.iter().map(|s| s * s).sum()
+}
+
+#[test]
+fn echoes_follow_the_tempo() {
+    // A short blip, echoed every quarter note at 120 BPM (0.5 s).
+    let mut p = sine(|p| {
+        p.set(P::AmpDecay, 0.02);
+        p.set(P::AmpSustain, 0.0);
+        p.set(P::DelayMix, 0.8);
+        p.set(P::DelayDivision, 6.0);
+        p.set(P::DelayWidth, 0.0);
+        p.set(P::DelayFeedback, 0.5);
+    });
+    p.set_tempo(2.0);
+    let (l, _) = render_lr(
+        &mut p,
+        &[(0, on(69)), (480, Event::NoteOff { note: 69 })],
+        72_000,
+    );
+    let window = |t: f32| energy(&l[(t * 48_000.0) as usize..(t * 48_000.0) as usize + 2400]);
+    assert!(window(0.5) > 100.0 * window(0.3), "first echo at 0.5 s");
+    assert!(window(1.0) > 100.0 * window(0.8), "second echo at 1 s");
+    assert!(window(1.0) < window(0.5), "each echo quieter");
+}
+
+#[test]
+fn effects_keep_the_image_centred() {
+    for (name, setup) in [
+        (
+            "chorus",
+            (|p: &mut Patch| p.set(P::ChorusMix, 1.0)) as fn(&mut Patch),
+        ),
+        ("echo", |p: &mut Patch| {
+            p.set(P::DelayMix, 0.7);
+            p.set(P::DelayWidth, 1.0);
+            p.set(P::DelayFeedback, 0.6);
+        }),
+        ("distortion", |p: &mut Patch| p.set(P::Distortion, 0.8)),
+    ] {
+        let mut p = sine(|p| {
+            p.set(P::Osc1Shape, 2.0);
+            setup(p);
+        });
+        let ev: Vec<_> = (0..8)
+            .flat_map(|i| {
+                [
+                    (i * 12_000, on(57 + 2 * i as u8)),
+                    (
+                        i * 12_000 + 6000,
+                        Event::NoteOff {
+                            note: 57 + 2 * i as u8,
+                        },
+                    ),
+                ]
+            })
+            .collect();
+        let (l, r) = render_lr(&mut p, &ev, 144_000);
+        let db = 10.0 * (energy(&l) / energy(&r)).log10();
+        assert!(db.abs() < 1.0, "{name} leans {db:.2} dB");
+    }
+}
+
+#[test]
+fn the_send_follows_the_dry_sound() {
+    let mut p = sine(|p| p.set(P::ReverbSend, 0.5));
+    let n = 4800;
+    let (mut dl, mut dr, mut sl, mut sr) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+    p.render_bus(
+        &[(0, on(69))],
+        moodscore_synth::Bus {
+            dry_l: &mut dl,
+            dry_r: &mut dr,
+            send_l: &mut sl,
+            send_r: &mut sr,
+        },
+    );
+    for i in 0..n {
+        assert!((sl[i] - 0.5 * dl[i]).abs() < 1e-6 && (sr[i] - 0.5 * dr[i]).abs() < 1e-6);
+    }
+    assert!(energy(&dl) > 0.0);
+}

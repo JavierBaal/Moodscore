@@ -8,6 +8,11 @@
 // The voices are summed, run through a stereo Moog-style ladder low-pass and
 // a stereo reverb.
 //
+// The note voices (the synth in moodscore-synth) arrive as four inputs: their
+// dry sound (left, right) and what they send to the reverb (left, right).
+// They share the drones' room, mono bass, master gain and soft clip, so
+// notes and drones sound in the same space.
+//
 // At rest only voice 1 (A1) and a quiet voice 2 (the fifth, E2) sound; the
 // others wait at level 0 on the notes of an A minor chord, ready to enter.
 //
@@ -97,8 +102,13 @@ spread = *(0.9), *(0.9);
 // ------------------------------------------------------------------- space
 
 wet = re.zita_rev1_stereo(0, 200, 6000, 6, 8, 48000);
-space = _, _ <: (_, _), wet : ro.interleave(2, 2)
-      : (_ * (1 - rev_mix) + _ * rev_mix), (_ * (1 - rev_mix) + _ * rev_mix);
+
+// Drones (dl, dr) keep their dry/wet balance; notes add their dry sound and
+// their send. The reverb is linear, so the drones sound exactly as before.
+room(dl, dr, nl, nr, sl, sr) =
+    (dl * (1 - rev_mix) + nl, dr * (1 - rev_mix) + nr),
+    ((dl * rev_mix + sl, dr * rev_mix + sr) : wet)
+    :> _, _;
 
 // -------------------------------------------------------------- mono bass
 
@@ -116,4 +126,6 @@ mono_bass = _, _ <: (fi.highpassLR4(bass_mono_fc), fi.highpassLR4(bass_mono_fc))
 
 safety = ma.tanh;   // soft clip: nothing leaves at more than full scale
 
-process = bus : filter : spread : space : mono_bass : (*(master) : safety), (*(master) : safety);
+drones = bus : filter : spread;
+
+process = (drones, _, _, _, _) : room : mono_bass : (*(master) : safety), (*(master) : safety);

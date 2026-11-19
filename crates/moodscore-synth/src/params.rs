@@ -261,6 +261,20 @@ params! {
     Lfo2Fade = "lfo2/fade", 0.0, 5.0, 0.0, Linear, S, "time to fade in after the delay";
     Lfo2Retrigger = "lfo2/retrigger", 0.0, 1.0, 0.0, Int, None, "1 restarts with each note, 0 runs freely";
 
+    Distortion = "fx/distortion", 0.0, 1.0, 0.0, Linear, None, "saturation of the whole part, after the voices";
+    ChorusMix = "fx/chorus_mix", 0.0, 1.0, 0.0, Linear, None, "chorus amount: thickens and widens";
+    ChorusRate = "fx/chorus_rate", 0.05, 5.0, 0.4, Log, HZ, "chorus speed";
+    ChorusDepth = "fx/chorus_depth", 0.0, 1.0, 0.5, Linear, None, "chorus depth";
+    DelayMix = "fx/delay_mix", 0.0, 1.0, 0.0, Linear, None, "echo level";
+    DelayDivision = "fx/delay_division", 0.0, 13.0, 5.0, Choice(DIVISIONS), None, "echo time, in tempo divisions (1/8d = dotted eighth)";
+    DelayFeedback = "fx/delay_feedback", 0.0, 0.95, 0.35, Linear, None, "how many echoes: each one this much of the last";
+    DelayWidth = "fx/delay_width", 0.0, 1.0, 0.5, Linear, None, "0 echoes in the centre; 1 the right side echoes half a step later, wide";
+    DelayTone = "fx/delay_tone", 500.0, 16000.0, 5000.0, Log, HZ, "echoes lose highs above this, each repeat a little darker";
+
+    PartLevel = "part/level", 0.0, 1.0, 0.7, Linear, None, "volume of the whole part";
+    PartPan = "part/pan", -1.0, 1.0, 0.0, Linear, None, "position of the whole part";
+    ReverbSend = "part/reverb_send", 0.0, 1.0, 0.25, Linear, None, "how much goes into the shared room (the drones' reverb)";
+
     Mod1Source = "mod1/source", 0.0, 9.0, 0.0, Choice(MOD_SOURCES), None, "modulation slot 1: what moves";
     Mod1Dest = "mod1/dest", 0.0, 24.0, 0.0, Choice(MOD_DESTS), None, "modulation slot 1: what it moves";
     Mod1Amount = "mod1/amount", -1.0, 1.0, 0.0, Linear, None, "modulation slot 1: how far, as a fraction of the target's range (of its octaves for frequencies)";

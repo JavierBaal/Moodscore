@@ -12,6 +12,7 @@
 //! thread.
 
 pub mod dsp;
+pub mod fx;
 pub mod lfo;
 pub mod osc;
 pub mod params;
@@ -19,5 +20,5 @@ pub mod part;
 pub mod voice;
 
 pub use params::{Kind, ParamDef, Patch, P, PARAMS};
-pub use part::{Event, Part, MAX_VOICES};
+pub use part::{Bus, Event, Part, MAX_VOICES};
 pub use voice::{Ctx, Voice};

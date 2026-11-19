@@ -194,6 +194,11 @@ impl TempoMap {
         self.time + x
     }
 
+    /// Quarter notes per second at `t`.
+    pub fn quarters_per_second(&self, t: f64) -> f64 {
+        self.quarter_bpm(t) / 60.0
+    }
+
     /// Tempo at `t`, in the metre's unit per minute.
     pub fn bpm_at(&self, t: f64) -> f64 {
         self.quarter_bpm(t) / self.meter.quarters_per_beat()

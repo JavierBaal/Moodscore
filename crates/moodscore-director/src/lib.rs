@@ -141,6 +141,9 @@ struct Lane {
     value: f32,
     gesture: Option<Gesture>,
     log: bool,
+    /// A count or a choice: nothing lies between values, so it switches
+    /// when its gesture ends instead of gliding.
+    step: bool,
 }
 
 impl Lane {
@@ -149,11 +152,24 @@ impl Lane {
             value,
             gesture: None,
             log,
+            step: false,
         }
+    }
+
+    fn stepped(mut self, step: bool) -> Self {
+        self.step = step;
+        self
     }
 
     fn at(&self, now: f64) -> f32 {
         match &self.gesture {
+            Some(g) if self.step => {
+                if g.done(now) {
+                    g.to
+                } else {
+                    g.from
+                }
+            }
             Some(g) => interp(g.from, g.to, g.progress(now), self.log),
             None => self.value,
         }
@@ -366,7 +382,7 @@ impl Director {
                 let log = p.scale == Scale::Log && p.min > 0.0;
                 ParamLane {
                     owner: Owner::Manual,
-                    manual: Lane::new(p.init, log),
+                    manual: Lane::new(p.init, log).stepped(p.scale == Scale::Discrete),
                     reclaim: None,
                     mapped_by: Vec::new(),
                     init: p.init,
@@ -562,11 +578,17 @@ impl Director {
 
         let lane = &mut self.lanes[id];
         if lane.owner != Owner::Manual || lane.reclaim.is_some() {
-            lane.manual = Lane::new(lane.out, lane.log);
+            lane.manual = Lane::new(lane.out, lane.log).stepped(lane.manual.step);
             lane.owner = Owner::Manual;
             lane.reclaim = None;
         }
         lane.hand_set = true;
+        // A count or a choice switches at once (after start_in).
+        let duration = if lane.manual.step {
+            MIN_DURATION
+        } else {
+            duration
+        };
         lane.manual.start(now, to, start_in, duration, curve);
         Ok(())
     }
@@ -595,7 +617,7 @@ impl Director {
             let free = lane.owner == Owner::Manual && !lane.hand_set;
             if lane.owner == Owner::Harmony || free || reclaim {
                 if lane.owner != Owner::Harmony {
-                    lane.manual = Lane::new(lane.out, lane.log);
+                    lane.manual = Lane::new(lane.out, lane.log).stepped(lane.manual.step);
                     lane.reclaim = None;
                 }
                 lane.owner = Owner::Harmony;
@@ -1060,6 +1082,8 @@ impl Conductor {
                 for (id, v) in d.values().enumerate() {
                     self.engine.set_target(id, v);
                 }
+                self.engine
+                    .set_tempo(d.tempo().quarters_per_second(now) as f32);
             }
             {
                 let mut pending = self.pending();

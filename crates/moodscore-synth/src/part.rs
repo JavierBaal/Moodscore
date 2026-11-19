@@ -10,6 +10,7 @@
 //! [`Part::render`] splits its block there, so timing is sample-accurate.
 //! Nothing here allocates after [`Part::new`].
 
+use crate::fx::{Fx, FxParams};
 use crate::params::{self, P, PARAMS};
 use crate::voice::{Ctx, Voice};
 
@@ -18,6 +19,17 @@ pub const MAX_VOICES: usize = 4;
 
 /// Keys remembered by a monophonic part.
 const STACK: usize = 16;
+
+/// Samples processed at a time inside the part.
+const SPAN: usize = 256;
+
+/// Where a part writes: its dry sound and its reverb send, stereo.
+pub struct Bus<'a> {
+    pub dry_l: &'a mut [f32],
+    pub dry_r: &'a mut [f32],
+    pub send_l: &'a mut [f32],
+    pub send_r: &'a mut [f32],
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Event {
@@ -46,6 +58,10 @@ pub struct Part {
     /// Running phase of each LFO, for LFOs that don't restart with notes.
     free_phase: [f32; 2],
     quarters_per_second: f32,
+    fx: Fx,
+    scratch: [[f32; SPAN]; 2],
+    /// Part gains (left, right, send) last applied, ramped per span.
+    gains: Option<[f32; 3]>,
 }
 
 impl Part {
@@ -63,6 +79,9 @@ impl Part {
             depth: 0,
             free_phase: [0.0; 2],
             quarters_per_second: 2.0,
+            fx: Fx::new(sample_rate),
+            scratch: [[0.0; SPAN]; 2],
+            gains: None,
         }
     }
 
@@ -218,18 +237,71 @@ impl Part {
         }
     }
 
-    /// Render `left.len()` samples, adding into the buffers. Each event is
-    /// applied at its sample offset in the block (offsets past the end are
-    /// applied at the end).
+    /// Render the dry sound only (the send is dropped), adding into the
+    /// buffers. See [`render_bus`](Self::render_bus).
     pub fn render(&mut self, events: &[(usize, Event)], left: &mut [f32], right: &mut [f32]) {
+        let mut sl = [0.0f32; SPAN];
+        let mut sr = [0.0f32; SPAN];
         let len = left.len();
+        let mut start = 0;
+        let mut ev = 0;
+        while start < len || ev < events.len() {
+            let end = (start + SPAN).min(len);
+            let first = ev;
+            while ev < events.len() && (events[ev].0 < end || end == len) {
+                ev += 1;
+            }
+            let n = end - start;
+            sl[..n].fill(0.0);
+            sr[..n].fill(0.0);
+            let mut local = [(0usize, Event::AllOff); 64];
+            let mut count = 0;
+            for &(t, e) in &events[first..ev] {
+                if count < local.len() {
+                    local[count] = (t.saturating_sub(start), e);
+                    count += 1;
+                }
+            }
+            self.render_bus(
+                &local[..count],
+                Bus {
+                    dry_l: &mut left[start..end],
+                    dry_r: &mut right[start..end],
+                    send_l: &mut sl[..n],
+                    send_r: &mut sr[..n],
+                },
+            );
+            if end == len {
+                break;
+            }
+            start = end;
+        }
+    }
+
+    /// Render `bus.dry_l.len()` samples, adding the dry sound and the reverb
+    /// send into the bus. Each event is applied at its sample offset in the
+    /// block (offsets past the end are applied at the end).
+    pub fn render_bus(&mut self, events: &[(usize, Event)], bus: Bus) {
+        let Bus {
+            dry_l,
+            dry_r,
+            send_l,
+            send_r,
+        } = bus;
+        let len = dry_l.len();
         let mut at = 0;
         let mut i = 0;
         while at < len || i < events.len() {
             let next = events.get(i).map_or(len, |&(t, _)| t.min(len));
-            if next > at {
-                self.render_span(&mut left[at..next], &mut right[at..next]);
-                at = next;
+            while next > at {
+                let end = next.min(at + SPAN);
+                self.render_span(
+                    &mut dry_l[at..end],
+                    &mut dry_r[at..end],
+                    &mut send_l[at..end],
+                    &mut send_r[at..end],
+                );
+                at = end;
             }
             if let Some(&(_, e)) = events.get(i) {
                 self.handle(e);
@@ -240,7 +312,14 @@ impl Part {
         }
     }
 
-    fn render_span(&mut self, left: &mut [f32], right: &mut [f32]) {
+    fn render_span(
+        &mut self,
+        dry_l: &mut [f32],
+        dry_r: &mut [f32],
+        send_l: &mut [f32],
+        send_r: &mut [f32],
+    ) {
+        let n = dry_l.len();
         let glide = self.get(P::PartGlide);
         // Glide reaches ~95% of the way in the glide time.
         let glide_coef = if glide > 0.0 {
@@ -252,13 +331,53 @@ impl Part {
             glide_coef,
             quarters_per_second: self.quarters_per_second,
         };
+        let [sl, sr] = &mut self.scratch;
+        let (left, right) = (&mut sl[..n], &mut sr[..n]);
+        left.fill(0.0);
+        right.fill(0.0);
         for v in &mut self.voices {
             if v.is_active() {
                 v.render(&self.patch, &ctx, left, right);
             }
         }
+
+        let g = |p: P| self.patch[p as usize];
+        let fxp = FxParams {
+            distortion: g(P::Distortion),
+            chorus_mix: g(P::ChorusMix),
+            chorus_rate: g(P::ChorusRate),
+            chorus_depth: g(P::ChorusDepth),
+            delay_mix: g(P::DelayMix),
+            delay_time: params::DIVISION_BEATS
+                [P::DelayDivision.def().sanitize(g(P::DelayDivision)) as usize]
+                / self.quarters_per_second,
+            delay_feedback: g(P::DelayFeedback),
+            delay_width: g(P::DelayWidth),
+            delay_tone: g(P::DelayTone),
+        };
+        self.fx.process(&fxp, left, right);
+
+        let (level, pan, send) = (g(P::PartLevel), g(P::PartPan), g(P::ReverbSend));
+        let to = [
+            level * (1.0 - pan).min(1.0),
+            level * (1.0 + pan).min(1.0),
+            send,
+        ];
+        let from = self.gains.unwrap_or(to);
+        self.gains = Some(to);
+        for i in 0..n {
+            let k = (i + 1) as f32 / n as f32;
+            let gl = from[0] + (to[0] - from[0]) * k;
+            let gr = from[1] + (to[1] - from[1]) * k;
+            let gs = from[2] + (to[2] - from[2]) * k;
+            let (l, r) = (left[i] * gl, right[i] * gr);
+            dry_l[i] += l;
+            dry_r[i] += r;
+            send_l[i] += l * gs;
+            send_r[i] += r * gs;
+        }
         // Free-running LFO phases move on whether or not anything sounds.
-        let dt = left.len() as f32 / self.sr;
+        let dt = n as f32 / self.sr;
         for (k, (rate, sync, div)) in [
             (P::Lfo1Rate, P::Lfo1Sync, P::Lfo1Division),
             (P::Lfo2Rate, P::Lfo2Sync, P::Lfo2Division),
