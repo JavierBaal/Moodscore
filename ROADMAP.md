@@ -10,7 +10,7 @@ Each phase ends with something you can hear. Order may change; scope will.
 - [x] `moodscore render` to check the sound end to end
 - [x] CI: fmt, clippy, tests and a render smoke test on Windows, macOS and Linux
 
-## Phase 1: Proof of concept ✅ (built; waiting on listening tests)
+## Phase 1: Proof of concept ✅ (validated live with Claude Desktop)
 
 The milestone that decides whether the idea works:
 
@@ -29,6 +29,11 @@ Sound:
 - Six drone voices and two melodic voices
 - All six mood macros with data-driven mappings, starting with `instability` and `tension`
 
+Harmony:
+- The six drone voices form a chord; the agent sets a harmonic plan (key, mode, progression with durations) and the engine walks it, voices gliding or crossfading between chords
+- Mode as colour: e.g. aeolian for dark, lydian for luminous, phrygian for ominous
+- `tension` can add dissonance (suspensions, added ninths, clusters); pedal points come for free
+
 Pace and time:
 - `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it
 - Tempo clock with tempo gestures: accelerando and ritardando glide like everything else, never jump
@@ -46,18 +51,28 @@ Session:
 
 Out of scope: full drum kits and groove programming. That's composition, and belongs in a DAW (or Four Hands Studio); Moodscore may share a clock with it later.
 
-## Phase 3: Listening
+## Phase 3: Melody
+
+Needs the tempo clock and the two melodic voices from Phase 2.
+
+- Generative melody within rules the agent sets: scale, register, density, contour, silence ("short falling phrases, lots of space"). The agent directs; the engine improvises
+- Written motifs: the agent writes a short theme (4–8 notes) and the engine plays it in time
+- Leitmotifs: save a theme and bring it back transformed (slower, in minor, another register) when a character or idea returns
+
+Out of scope: fully composed songs with melody, harmony and form written note by note. That's Four Hands Studio territory; Moodscore does harmonic fields and motifs.
+
+## Phase 4: Listening
 
 - Output analysis and the `listen` tool
 - Human overrides reported through `get_state`
 - Agent guide: a prompt or skill teaching agents how to perform with Moodscore
 
-## Phase 4: Watching it play
+## Phase 5: Watching it play
 
 - Minimal GUI: macros, active gestures and voices moving in real time
 - Manual control of macros, with the agent aware of your changes
 
-## Phase 5: Scoring to picture
+## Phase 6: Scoring to picture
 
 - Load a video, detect scene cuts, extract keyframes
 - Agent drafts a cue sheet from the picture

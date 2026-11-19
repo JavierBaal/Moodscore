@@ -46,7 +46,7 @@ Owns the audio callback. Targets cross from the control thread as one atomic per
 1. Reads the targets.
 2. Smooths every parameter toward its target (30 ms time constant; in the log domain for frequencies), so no change reaches the DSP as a step.
 3. Runs the DSP.
-4. Updates the level meters (peak, 300 ms RMS) for `get_state`. Richer analysis for `listen` comes in Phase 3.
+4. Updates the level meters (peak, 300 ms RMS) for `get_state`. Richer analysis for `listen` comes in Phase 4.
 
 A 1.5 s fade-in avoids a thump when the engine starts.
 

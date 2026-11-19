@@ -45,6 +45,52 @@ Set the default transition time and shape for every tool call that doesn't speci
 { "over": 30, "curve": "ease_in_out" }
 ```
 
+## Harmony (planned, Phase 2)
+
+### `harmony`
+
+Set a harmonic plan. The engine walks the progression, voice-leading smoothly between chords.
+
+```json
+{
+  "key": "E",
+  "mode": "aeolian",
+  "progression": [
+    { "chord": "i",   "bars": 4 },
+    { "chord": "VI",  "bars": 4 },
+    { "chord": "III", "bars": 4 },
+    { "chord": "VII", "bars": 4 }
+  ],
+  "loop": true,
+  "pedal": "E1",
+  "transition": "glide"
+}
+```
+
+Durations may also be given in seconds when no tempo is running.
+
+## Melody (planned, Phase 3)
+
+### `melody`
+
+Either rules for generative melody, or a written motif.
+
+```json
+{ "mode": "generative", "register": "mid", "density": 0.2, "contour": "falling", "phrase_length": [2, 5] }
+```
+
+```json
+{ "mode": "motif", "notes": ["B3", "G3", "F#3", "E3"], "durations": [1, 1, 0.5, 2.5], "save_as": "theme_a" }
+```
+
+### `recall_motif`
+
+Bring back a saved motif, optionally transformed.
+
+```json
+{ "name": "theme_a", "transform": { "tempo": 0.5, "mode": "minor", "transpose": -12 } }
+```
+
 ## Time and pulse (planned, Phase 2)
 
 ### `tempo`
