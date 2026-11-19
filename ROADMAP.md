@@ -27,7 +27,7 @@ The milestone that decides whether the idea works:
 
 **Agreed order from here (19 Nov 2026):**
 
-1. Tempo clock in the audio thread, sample-accurate, with tempo gestures; harmony durations in bars.
+1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free, ready to be read from the audio thread by the step sequencer.
 2. The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
 3. Audition: Claude's ears (render, analyse, describe).
 4. Step sequencer: arpeggios and ostinatos played by the note voices.
@@ -68,7 +68,7 @@ Arpeggios and ostinatos (planned with Fran on 19 Nov; need the tempo clock and t
 
 Pace and time:
 - [x] `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it
-- Tempo clock with tempo gestures: accelerando and ritardando glide like everything else, never jump
+- [x] Tempo clock with tempo gestures: accelerando and ritardando glide like everything else, never jump (`tempo`; chords in bars and beats follow it)
 - Tempo-synced modulation: LFOs, filter pulsing, delays
 
 Pulse (cinematic rhythm, not a drum machine):

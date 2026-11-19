@@ -70,6 +70,8 @@ The conductor also holds transport fades scheduled with `start_in`, and fires th
 
 Harmony (`harmony.rs`) is pure music theory: keys and modes, Roman-numeral chords spelled by letter, and voice leading (each voice takes the chord tone that moves it least, covering the chord and avoiding unisons). The director walks a harmonic plan in its own clock: each chord change is anchored to the moment it was due (not the control tick that noticed it) and played as glides on the voice pitches. Voice pitches have a third owner, `harmony`, alongside macros and manual.
 
+Musical time (`tempo.rs`) is a tempo map: the last tempo change (time, beat position, tempo, an optional ramp along a curve) plus the metre and where bar 1 began. Beats at any instant come from a closed form (each curve's integral is known), and the inverse, the instant a beat falls on, is solved to well under a sample, so nothing is accumulated tick by tick and nothing drifts. Positions are counted in quarter notes inside, so a change of metre never moves the music. Harmony walks its plan step by step: a chord counted in beats or bars ends when the map reaches its last beat, so a tempo change mid-chord reshapes what is left of it. The map is `Copy` and never allocates, ready to be handed to the audio thread when the step sequencer needs sample-accurate triggers.
+
 ### moodscore-mcp
 
 The MCP server, built on `rmcp`. It validates tool calls, turns them into director commands and reports state back. See [MCP_TOOLS.md](MCP_TOOLS.md).

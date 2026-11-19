@@ -71,10 +71,11 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 
 - **`key`**: tonic (`A`, `F#`, `Bb`). **`mode`**: `ionian`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `aeolian` (default), `locrian`, or `major` / `minor`. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous, mixolydian open and heroic, locrian unstable.
 - **Chords** are Roman numerals in the key. Case is quality: upper case major, lower case minor, so `V` in a minor key is the borrowed major V. `b`/`#` before the numeral alters the root (`bVI`, `bVII`). `°` (or `o`, `dim`) diminished, `+` (or `aug`) augmented, `ø` half-diminished. Colour, in any order after the numeral: `7` (the mode's seventh), `maj7`, `sus2`, `sus4`, `add9` (the mode's ninth). Notes are spelled properly by letter (`iv` in C major is F A♭ C).
-- **Durations** in `seconds` per chord (0.5–600). Bars come with the tempo clock.
+- **Durations**: each chord gives exactly one of `seconds` (0.5–600), `beats` (0.5–1024, in the metre's beat unit) or `bars` (0.25–256). Beats and bars follow the tempo clock (see `tempo`), ramps included; a tempo change mid-chord stretches or shrinks what is left of it. Every change lands exactly when it is due, so a looping progression never drifts off the beat.
+- **`start_on`**: `"now"` (default), `"beat"` (next beat) or `"bar"` (next downbeat). While a plan waits, the state shows `harmony.starts_in`.
 - **`loop`** (default true). Without it, the last chord holds.
 - **`pedal`**: a note held in the bass under every chord (`A`, or `E1`…`E2` with an octave). Without it the bass voice (`drone_1`) follows each chord's root.
-- **`glide`**: seconds each voice takes to reach its next note (default 3); **`curve`** shapes it.
+- **`glide`**: seconds each voice takes to reach its next note (default 3); **`curve`** shapes it. With short chords, lower it so each chord arrives before the next.
 - Voicing: `drone_1` is the bass (E1–E2), `drone_2`…`drone_6` share the chord (E2–A4). Every chord tone is covered when there are enough voices (dropping the fifth first when there aren't); extra voices double the root or fifth, or whatever moves least.
 - Harmony moves pitches only, never levels: the chord sounds through whichever voices are up (bring them in with `gesture` on `drone_N/level`).
 - **Ownership**: harmony takes every voice pitch nobody has set by hand. A pitch retuned with `gesture` leaves the harmony and stays put (`get_state` shows it as `manual` with `held_from: ["harmony"]`) until a `harmony` call with `"reclaim": true`.
@@ -103,15 +104,27 @@ Bring back a saved motif, optionally transformed.
 { "name": "theme_a", "transform": { "tempo": 0.5, "mode": "minor", "transpose": -12 } }
 ```
 
-## Time and pulse (planned, Phase 2)
+## Time and pulse (Phase 2)
 
-### `tempo`
+### `tempo` ✅
 
-Set or glide the tempo. Glides are gestures: an accelerando is `tempo` with `over`.
+The musical clock: tempo and metre. It runs from the moment the engine starts, at 120 BPM in 4/4.
 
 ```json
-{ "bpm": 90, "over": 120, "curve": "ease_in" }
+{ "bpm": 138, "meter": "4/4", "downbeat": true }
 ```
+
+```json
+{ "bpm": 70, "over_bars": 4, "curve": "ease_out" }
+```
+
+- **`bpm`** (20–300) counts the metre's beat: the quarter note in 4/4 or 3/4, the eighth in 6/8. Omit it to keep the current speed (a metre change then keeps the quarter note's speed).
+- **`meter`**: `"4/4"`, `"3/4"`, `"6/8"`, `"5/4"`… A new metre starts a new bar at once.
+- **`over`** (seconds) or **`over_bars`** (bars of the new metre): glide to the new tempo instead of switching, an accelerando or ritardando. Default: switch at once. **`curve`** shapes the glide (default `linear`). A ramp in bars covers exactly that many bars, whatever the curve.
+- **`downbeat`**: make this moment bar 1, beat 1. Otherwise the bar count carries on.
+- Changes never move the beat: the position carries on unbroken, and a glide starts from the tempo of that moment (even in the middle of another glide).
+- The state reports `tempo`: `bpm`, `meter`, `bar` and `beat` now, `seconds_per_bar`, and while a glide is under way `ramping_to` and `ramp_seconds_remaining`.
+- The tempo map is analytic: the beat at any instant is computed exactly from the last change, not accumulated, so it is exact at any sample. Today the director reads it (harmony); the step sequencer will read the same map in the audio thread.
 
 ### `pulse`
 

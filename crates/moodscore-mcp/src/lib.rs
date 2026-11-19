@@ -2,13 +2,14 @@
 //!
 //! The tools an AI agent uses to play Moodscore, as described in
 //! `docs/MCP_TOOLS.md`: `start` and `release` (the transport), `morph`
-//! (the mood macros), `gesture`, `set_pace` and `get_state`.
+//! (the mood macros), `gesture`, `harmony`, `tempo`, `set_pace` and
+//! `get_state`.
 //!
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
 
 use moodscore_director::harmony::{parse_note, Chord, Key};
-use moodscore_director::{Conductor, Curve, HarmonyPlan};
+use moodscore_director::{Conductor, Curve, HarmonyPlan, Length, Meter, StartOn};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -46,6 +47,13 @@ on its own, looping, each voice gliding to the nearest note of the next chord. \
 Use it when the person asks for harmony, chords, a progression, a key or a \
 change of colour; then bring voices in with drone_N/level so the chord is \
 heard. A voice you retune by hand leaves the harmony until reclaim.
+- Moodscore keeps a musical clock (tempo and metre, 120 BPM 4/4 until you \
+change it). When the person gives a tempo, a metre or a score, set it with \
+`tempo` and give chord lengths in bars or beats instead of working out \
+seconds: the chords then follow the tempo, accelerandos and ritardandos \
+included. A ramp (over or over_bars) speeds up or slows down gradually. \
+start_on: \"bar\" makes a new progression land on the next downbeat. With \
+short chords, lower glide so each chord arrives before the next.
 - `release` and `start` accept start_in to delay the fade, e.g. to let an \
 unstable outro peak at full volume before it dies away.
 - If the person sets a general pace (\"everything slow today\", \"short and \
@@ -106,8 +114,12 @@ pub struct GetStateArgs {}
 pub struct ChordStep {
     /// Roman numeral in the key: upper case major, lower case minor (i, VI, V, bVII). Add ° dim, + aug, ø half-dim; colour with 7, maj7, sus2, sus4, add9 (e.g. iv7, Vsus4, iadd9).
     pub chord: String,
-    /// How long this chord lasts, in seconds.
-    pub seconds: f32,
+    /// How long this chord lasts, in seconds. Give exactly one of seconds, beats or bars.
+    pub seconds: Option<f32>,
+    /// How long this chord lasts, in beats of the current metre (quarter notes in 4/4); follows the tempo.
+    pub beats: Option<f32>,
+    /// How long this chord lasts, in bars; follows the tempo.
+    pub bars: Option<f32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -129,9 +141,29 @@ pub struct HarmonyArgs {
     pub curve: Option<String>,
     /// Also take over voices whose pitch was set by hand with gesture. Default false.
     pub reclaim: Option<bool>,
+    /// When the first chord lands: "now", "beat" (next beat) or "bar" (next downbeat). Default now.
+    pub start_on: Option<String>,
     /// Stop walking the harmony: voices stay on their current notes and become free. Other fields are ignored.
     pub stop: Option<bool>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TempoArgs {
+    /// Beats per minute, counting the metre's beat (the quarter note in 4/4 and 3/4, the eighth in 6/8). 20 to 300. Omit to keep the current speed.
+    pub bpm: Option<f64>,
+    /// Time signature, e.g. "4/4", "3/4", "6/8", "5/4". A new metre starts a new bar now. Omit to keep it.
+    pub meter: Option<String>,
+    /// Seconds to glide to the new bpm (accelerando or ritardando). Default 0: change at once.
+    pub over: Option<f64>,
+    /// Bars to glide to the new bpm, counted in the new metre. Use instead of over.
+    pub over_bars: Option<f64>,
+    /// Shape of the glide: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default linear.
+    pub curve: Option<String>,
+    /// Make this moment the downbeat of bar 1. Default false: the bar count carries on.
+    pub downbeat: Option<bool>,
+}
+
+const MAX_BARS: f64 = 256.0;
 
 const DEFAULT_GLIDE: f32 = 3.0;
 const MAX_CHORDS: usize = 64;
@@ -313,7 +345,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. A new plan starts now from its first chord, voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
+        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A new plan starts from its first chord now (or on the next beat or downbeat with start_on), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
     )]
     fn harmony(&self, Parameters(args): Parameters<HarmonyArgs>) -> Result<String, String> {
         if args.stop.unwrap_or(false) {
@@ -338,14 +370,9 @@ impl MoodscoreServer {
         for (i, step) in steps.iter().enumerate() {
             let chord =
                 Chord::parse(&step.chord, &key).map_err(|e| format!("chord {}: {e}", i + 1))?;
-            if !step.seconds.is_finite() || !(0.5..=600.0).contains(&step.seconds) {
-                return Err(format!(
-                    "chord {} ({}): seconds must be between 0.5 and 600",
-                    i + 1,
-                    step.chord
-                ));
-            }
-            progression.push((chord, step.seconds));
+            let length =
+                chord_length(step).map_err(|e| format!("chord {} ({}): {e}", i + 1, step.chord))?;
+            progression.push((chord, length));
         }
         let pedal = args
             .pedal
@@ -365,6 +392,21 @@ impl MoodscoreServer {
             return Err("glide must be between 0 and 600 seconds".into());
         }
         let curve = curve_or(args.curve.as_deref(), Curve::EaseInOut)?;
+        let start_on = match args
+            .start_on
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("") | Some("now") => StartOn::Now,
+            Some("beat") => StartOn::Beat,
+            Some("bar") | Some("downbeat") => StartOn::Bar,
+            Some(other) => {
+                return Err(format!(
+                    "start_on '{other}': use \"now\", \"beat\" or \"bar\""
+                ))
+            }
+        };
         let plan = HarmonyPlan {
             key,
             progression,
@@ -372,9 +414,53 @@ impl MoodscoreServer {
             pedal,
             glide,
             curve,
+            start_on,
         };
         self.conductor
             .harmony(plan, args.reclaim.unwrap_or(false))
+            .map_err(|e| e.to_string())?;
+        Ok(self.report(Detail::Brief))
+    }
+
+    #[tool(
+        description = "Set the musical clock: tempo (bpm) and metre, at once or gliding over time (accelerando, ritardando). Chords given in bars or beats follow it. The bar count carries on through changes unless downbeat is true; a new metre starts a new bar. Returns the output, pace, tempo (bpm, metre, bar and beat now, any ramp under way), harmony and macros."
+    )]
+    fn tempo(&self, Parameters(args): Parameters<TempoArgs>) -> Result<String, String> {
+        let meter: Option<Meter> = args
+            .meter
+            .as_deref()
+            .filter(|m| !m.trim().is_empty())
+            .map(str::parse)
+            .transpose()?;
+        let curve = curve_or(args.curve.as_deref(), Curve::Linear)?;
+        let ramp = match (args.over, args.over_bars) {
+            (Some(_), Some(_)) => return Err("give over or over_bars, not both".into()),
+            (Some(s), None) => s,
+            (None, Some(bars)) => {
+                if !bars.is_finite() || !(0.0..=MAX_BARS).contains(&bars) {
+                    return Err(format!("over_bars must be between 0 and {MAX_BARS}"));
+                }
+                match args.bpm {
+                    None => 0.0,
+                    Some(bpm) => {
+                        let m = meter.unwrap_or(self.conductor.tempo().meter());
+                        self.conductor.tempo().ramp_seconds_for(
+                            self.conductor.now(),
+                            bpm,
+                            Some(m),
+                            bars * m.quarters_per_bar(),
+                            curve,
+                        )
+                    }
+                }
+            }
+            (None, None) => 0.0,
+        };
+        if args.bpm.is_none() && meter.is_none() && !args.downbeat.unwrap_or(false) {
+            return Err("tempo needs a bpm, a meter or downbeat: true".into());
+        }
+        self.conductor
+            .set_tempo(args.bpm, meter, ramp, curve, args.downbeat.unwrap_or(false))
             .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
     }
@@ -401,6 +487,24 @@ impl MoodscoreServer {
     )]
     fn get_state(&self, Parameters(_): Parameters<GetStateArgs>) -> String {
         self.report(Detail::Full)
+    }
+}
+
+/// A chord's length: exactly one of seconds, beats or bars.
+fn chord_length(step: &ChordStep) -> Result<Length, String> {
+    let check = |v: f32, lo: f32, hi: f32, unit: &str| {
+        if v.is_finite() && (lo..=hi).contains(&v) {
+            Ok(v)
+        } else {
+            Err(format!("{unit} must be between {lo} and {hi}"))
+        }
+    };
+    match (step.seconds, step.beats, step.bars) {
+        (Some(s), None, None) => Ok(Length::Seconds(check(s, 0.5, 600.0, "seconds")?)),
+        (None, Some(b), None) => Ok(Length::Beats(check(b, 0.5, 1024.0, "beats")?)),
+        (None, None, Some(b)) => Ok(Length::Bars(check(b, 0.25, MAX_BARS as f32, "bars")?)),
+        (None, None, None) => Err("give its length in seconds, beats or bars".into()),
+        _ => Err("give its length in only one of seconds, beats or bars".into()),
     }
 }
 

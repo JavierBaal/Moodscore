@@ -24,6 +24,7 @@
 pub mod curve;
 pub mod harmony;
 pub mod mapping;
+pub mod tempo;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,7 @@ use serde::Serialize;
 
 pub use curve::Curve;
 pub use mapping::{MacroDef, MappingError, Mode, DEFAULT_MAPPINGS};
+pub use tempo::{Meter, TempoMap};
 
 /// The shortest a gesture can take, in seconds. "Instant" means this.
 pub const MIN_DURATION: f32 = 0.05;
@@ -249,62 +251,109 @@ pub struct Director {
     /// Parameter ids of each voice's pitch: drone_1/pitch, drone_2/pitch, …
     voice_pitches: Vec<usize>,
     harmony: Option<HarmonyRun>,
+    tempo: TempoMap,
+}
+
+/// How long a chord lasts: in seconds, or in musical time that follows the
+/// tempo (and its ramps).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Length {
+    Seconds(f32),
+    /// Beats of the metre (quarters in 4/4, eighths in 6/8).
+    Beats(f32),
+    Bars(f32),
+}
+
+/// Where a new plan's first chord lands.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum StartOn {
+    /// Right away.
+    #[default]
+    Now,
+    /// On the next beat.
+    Beat,
+    /// On the next downbeat.
+    Bar,
 }
 
 /// A harmonic plan: a key and a progression the director walks through.
 #[derive(Clone, Debug)]
 pub struct HarmonyPlan {
     pub key: harmony::Key,
-    /// Each chord with how long it lasts, in seconds.
-    pub progression: Vec<(harmony::Chord, f32)>,
+    /// Each chord with how long it lasts.
+    pub progression: Vec<(harmony::Chord, Length)>,
     pub looping: bool,
     /// A note held in the bass under every chord.
     pub pedal: Option<harmony::Note>,
     /// Seconds each voice takes to glide to its next note.
     pub glide: f32,
     pub curve: Curve,
+    pub start_on: StartOn,
 }
 
-impl HarmonyPlan {
-    fn total(&self) -> f64 {
-        self.progression.iter().map(|(_, s)| *s as f64).sum()
-    }
-
-    /// Which chord sounds `elapsed` seconds in, counting loops (so the same
-    /// chord on the next lap is a new step); seconds since that chord began;
-    /// and seconds until the next one (infinite once a non-looping plan ends).
-    fn step_at(&self, elapsed: f64) -> (usize, f64, f64) {
-        let total = self.total();
-        let n = self.progression.len();
-        let elapsed = elapsed.max(0.0);
-        let (lap, mut t) = if self.looping {
-            (
-                (elapsed / total).floor() as usize,
-                elapsed.rem_euclid(total),
-            )
-        } else if elapsed >= total {
-            let last = self.progression[n - 1].1 as f64;
-            return (n - 1, elapsed - (total - last), f64::INFINITY);
-        } else {
-            (0, elapsed)
-        };
-        for (i, (_, secs)) in self.progression.iter().enumerate() {
-            let secs = *secs as f64;
-            if t < secs {
-                return (lap * n + i, t, secs - t);
-            }
-            t -= secs;
-        }
-        (lap * n + n - 1, 0.0, 0.0)
-    }
-}
-
+/// A plan being walked. Chords are counted from the start, laps included,
+/// so the same chord on the next lap is a new step.
 #[derive(Clone, Debug)]
 struct HarmonyRun {
     plan: HarmonyPlan,
-    start: f64,
+    /// When the first chord lands.
+    starts_at: f64,
+    step: usize,
+    /// When the current step began, in seconds and in quarter notes.
+    step_time: f64,
+    step_beat: f64,
     /// The step last voiced.
     applied: Option<usize>,
+}
+
+impl HarmonyRun {
+    fn len(&self) -> usize {
+        self.plan.progression.len()
+    }
+
+    /// A non-looping plan holds its last chord for ever.
+    fn holding(&self) -> bool {
+        !self.plan.looping && self.step + 1 >= self.len()
+    }
+
+    /// Quarter notes the current step lasts, if it is counted in musical time.
+    fn step_quarters(&self, tempo: &TempoMap) -> Option<f64> {
+        let meter = tempo.meter();
+        match self.plan.progression[self.step % self.len()].1 {
+            Length::Seconds(_) => None,
+            Length::Beats(b) => Some(b as f64 * meter.quarters_per_beat()),
+            Length::Bars(b) => Some(b as f64 * meter.quarters_per_bar()),
+        }
+    }
+
+    /// When the current step ends, under `tempo`.
+    fn step_end(&self, tempo: &TempoMap) -> f64 {
+        if self.holding() {
+            return f64::INFINITY;
+        }
+        match self.plan.progression[self.step % self.len()].1 {
+            Length::Seconds(s) => self.step_time + s as f64,
+            _ => tempo.time_at(self.step_beat + self.step_quarters(tempo).unwrap_or(0.0)),
+        }
+    }
+
+    /// Move on through every step that has ended by `now`. Each step starts
+    /// exactly when the previous one was due, so nothing drifts.
+    fn walk(&mut self, now: f64, tempo: &TempoMap) {
+        // Bounded: chords last at least a fraction of a second.
+        for _ in 0..100_000 {
+            let end = self.step_end(tempo);
+            if now < end {
+                return;
+            }
+            self.step_beat = match self.step_quarters(tempo) {
+                Some(q) => self.step_beat + q,
+                None => tempo.beat_at(end),
+            };
+            self.step_time = end;
+            self.step += 1;
+        }
+    }
 }
 
 impl Director {
@@ -351,6 +400,7 @@ impl Director {
             pace: Pace::default(),
             voice_pitches: Vec::new(),
             harmony: None,
+            tempo: TempoMap::default(),
         };
         d.voice_pitches = (1..)
             .map_while(|v| {
@@ -552,12 +602,59 @@ impl Director {
                 lane.hand_set = false;
             }
         }
+        let starts_at = match plan.start_on {
+            StartOn::Now => now,
+            StartOn::Beat => self.tempo.next_beat(now),
+            StartOn::Bar => self.tempo.next_bar(now),
+        };
         self.harmony = Some(HarmonyRun {
             plan,
-            start: now,
+            starts_at,
+            step: 0,
+            step_time: starts_at,
+            step_beat: self.tempo.beat_at(starts_at),
             applied: None,
         });
         self.advance_harmony(now);
+        Ok(())
+    }
+
+    /// The tempo map in force.
+    pub fn tempo(&self) -> &TempoMap {
+        &self.tempo
+    }
+
+    /// Change tempo and/or metre at `now`. See [`TempoMap::changed`]: the beat
+    /// carries on unbroken, a new metre starts a new bar, and with a ramp the
+    /// tempo glides to `bpm` over `ramp` seconds. Chords counted in beats or
+    /// bars stretch or shrink with it.
+    pub fn set_tempo(
+        &mut self,
+        now: f64,
+        bpm: Option<f64>,
+        meter: Option<Meter>,
+        ramp: f64,
+        curve: Curve,
+        downbeat: bool,
+    ) -> Result<(), DirectorError> {
+        if let Some(b) = bpm {
+            if !b.is_finite() || !(tempo::MIN_BPM..=tempo::MAX_BPM).contains(&b) {
+                return Err(DirectorError::Invalid(format!(
+                    "bpm must be between {} and {}",
+                    tempo::MIN_BPM,
+                    tempo::MAX_BPM
+                )));
+            }
+        }
+        if !ramp.is_finite() || !(0.0..=MAX_DURATION as f64).contains(&ramp) {
+            return Err(DirectorError::Invalid(format!(
+                "a tempo change can take at most {MAX_DURATION} seconds"
+            )));
+        }
+        // Settle the harmony under the old tempo first: whatever was due
+        // before now happened at the old speed.
+        self.advance_harmony(now);
+        self.tempo = self.tempo.changed(now, bpm, meter, ramp, curve, downbeat);
         Ok(())
     }
 
@@ -576,15 +673,20 @@ impl Director {
 
     /// Voice the chord that should be sounding at `now`, if it changed.
     fn advance_harmony(&mut self, now: f64) {
-        let Some(run) = &self.harmony else { return };
-        let (step, since, _) = run.plan.step_at(now - run.start);
+        let tempo = self.tempo;
+        let Some(run) = &mut self.harmony else { return };
+        if now < run.starts_at {
+            return;
+        }
+        run.walk(now, &tempo);
+        let step = run.step;
         if run.applied == Some(step) {
             return;
         }
         // Start the change when the chord was due, not when we noticed: the
         // control loop runs at a fixed rate, and offline renders may jump.
-        let at = now - since;
-        let idx = step % run.plan.progression.len();
+        let at = run.step_time;
+        let idx = step % run.len();
         let chord = run.plan.progression[idx].0.clone();
         let (pedal, glide, curve) = (run.plan.pedal, run.plan.glide, run.plan.curve);
 
@@ -740,8 +842,19 @@ impl Director {
             })
             .collect();
 
+        let pos = self.tempo.position(now);
+        let ramp = self.tempo.ramp_at(now);
         State {
             pace: self.pace,
+            tempo: TempoState {
+                bpm: round1(self.tempo.bpm_at(now)),
+                meter: self.tempo.meter().to_string(),
+                bar: pos.bar,
+                beat: (pos.beat * 100.0).floor() / 100.0,
+                seconds_per_bar: round(self.tempo.seconds_per_bar(now) as f32),
+                ramping_to: ramp.map(|(b, _)| round1(b)),
+                ramp_seconds_remaining: ramp.map(|(_, s)| round(s as f32)),
+            },
             harmony: self.harmony_state(now),
             macros,
             params,
@@ -749,31 +862,31 @@ impl Director {
     }
 
     fn harmony_state(&self, now: f64) -> Option<HarmonyState> {
-        let run = self.harmony.as_ref()?;
+        let mut run = self.harmony.clone()?;
+        let waiting = now < run.starts_at;
+        if !waiting {
+            run.walk(now, &self.tempo);
+        }
         let plan = &run.plan;
         let n = plan.progression.len();
-        let (step, _, left) = plan.step_at(now - run.start);
-        let idx = step % n;
+        let idx = run.step % n;
         let chord = &plan.progression[idx].0;
-        let finished = !plan.looping && left.is_infinite();
-        let next = if finished || (!plan.looping && idx + 1 == n) {
-            None
-        } else {
-            Some(&plan.progression[(idx + 1) % n].0)
+        let next = (!run.holding()).then(|| &plan.progression[(idx + 1) % n].0);
+        let chord_state = |c: &harmony::Chord| ChordState {
+            symbol: c.symbol.clone(),
+            name: c.name.clone(),
+            notes: c.note_names(),
         };
         Some(HarmonyState {
             key: format!("{} {}", plan.key.name(plan.key.tonic), plan.key.mode),
-            chord: ChordState {
-                symbol: chord.symbol.clone(),
-                name: chord.name.clone(),
-                notes: chord.note_names(),
+            starts_in: waiting.then(|| round((run.starts_at - now) as f32)),
+            chord: chord_state(chord),
+            next: if waiting { None } else { next.map(chord_state) },
+            seconds_to_next: if waiting {
+                None
+            } else {
+                next.map(|_| round((run.step_end(&self.tempo) - now).max(0.0) as f32))
             },
-            next: next.map(|c| ChordState {
-                symbol: c.symbol.clone(),
-                name: c.name.clone(),
-                notes: c.note_names(),
-            }),
-            seconds_to_next: next.map(|_| round(left as f32)),
             position: format!("{}/{}", idx + 1, n),
             looping: plan.looping,
             pedal: plan.pedal.map(|p| plan.key.name(p.pitch_class).to_string()),
@@ -794,10 +907,15 @@ fn round(x: f32) -> f32 {
     (x * 1000.0).round() / 1000.0
 }
 
+fn round1(x: f64) -> f32 {
+    ((x * 10.0).round() / 10.0) as f32
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct State {
     /// Default duration and curve for calls that don't give their own.
     pub pace: Pace,
+    pub tempo: TempoState,
     /// The harmonic plan being walked, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harmony: Option<HarmonyState>,
@@ -805,10 +923,30 @@ pub struct State {
     pub params: Vec<ParamState>,
 }
 
+/// The musical clock.
+#[derive(Clone, Debug, Serialize)]
+pub struct TempoState {
+    /// Beats per minute, in the metre's beat unit.
+    pub bpm: f32,
+    pub meter: String,
+    /// Bar 1, beat 1 is the first downbeat.
+    pub bar: i64,
+    pub beat: f64,
+    pub seconds_per_bar: f32,
+    /// The tempo a ramp under way is heading for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ramping_to: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ramp_seconds_remaining: Option<f32>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct HarmonyState {
     /// e.g. "A aeolian".
     pub key: String,
+    /// Seconds until the first chord lands, for a plan waiting for its beat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_in: Option<f32>,
     pub chord: ChordState,
     /// The chord coming next, unless the plan has ended.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -984,6 +1122,24 @@ impl Conductor {
 
     pub fn stop_harmony(&self) {
         self.lock().stop_harmony()
+    }
+
+    pub fn set_tempo(
+        &self,
+        bpm: Option<f64>,
+        meter: Option<Meter>,
+        ramp: f64,
+        curve: Curve,
+        downbeat: bool,
+    ) -> Result<(), DirectorError> {
+        let now = self.now();
+        self.lock()
+            .set_tempo(now, bpm, meter, ramp, curve, downbeat)
+    }
+
+    /// The tempo map in force.
+    pub fn tempo(&self) -> TempoMap {
+        *self.lock().tempo()
     }
 
     pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {

@@ -351,20 +351,29 @@ fn mapping_rules_for_add_and_wildcards() {
 // ---------------------------------------------------------------- harmony
 
 use moodscore_director::harmony::{hz_to_midi, parse_note, Chord, Key};
-use moodscore_director::HarmonyPlan;
+use moodscore_director::{HarmonyPlan, Length, StartOn};
 
 fn plan(key: &str, mode: &str, chords: &[(&str, f32)], looping: bool) -> HarmonyPlan {
+    let lengths: Vec<(&str, Length)> = chords
+        .iter()
+        .map(|&(c, s)| (c, Length::Seconds(s)))
+        .collect();
+    plan_in(key, mode, &lengths, looping)
+}
+
+fn plan_in(key: &str, mode: &str, chords: &[(&str, Length)], looping: bool) -> HarmonyPlan {
     let k = Key::new(key, mode).unwrap();
     HarmonyPlan {
         progression: chords
             .iter()
-            .map(|(c, s)| (Chord::parse(c, &k).unwrap(), *s))
+            .map(|(c, l)| (Chord::parse(c, &k).unwrap(), *l))
             .collect(),
         key: k,
         looping,
         pedal: None,
         glide: 2.0,
         curve: Curve::EaseInOut,
+        start_on: StartOn::Now,
     }
 }
 
@@ -502,4 +511,142 @@ fn a_pedal_holds_the_bass_and_stop_frees_the_voices() {
     // and a gesture works on them as usual
     d.gesture(40.0, "drone_3/pitch", 100.0, 0.0, Curve::Linear, 0.0)
         .unwrap();
+}
+
+// ---------------------------------------------------------------- tempo
+
+/// The chord sounding at `t` and the seconds to the next one.
+fn chord_at(d: &mut Director, t: f64) -> (String, Option<f32>) {
+    d.tick(t);
+    let h = d.state(t).harmony.unwrap();
+    (h.chord.name, h.seconds_to_next)
+}
+
+#[test]
+fn chords_in_bars_follow_the_tempo() {
+    let mut d = director();
+    d.set_tempo(0.0, Some(138.0), None, 0.0, Curve::Linear, true)
+        .unwrap();
+    let bar = 4.0 * 60.0 / 138.0; // 1.739 s
+    d.harmony(
+        0.0,
+        plan_in(
+            "B",
+            "aeolian",
+            &[("i", Length::Bars(2.0)), ("VI", Length::Beats(2.0))],
+            true,
+        ),
+        false,
+    )
+    .unwrap();
+    let (c, left) = chord_at(&mut d, 0.5);
+    assert_eq!(c, "Bm");
+    assert!((left.unwrap() as f64 - (2.0 * bar - 0.5)).abs() < 1e-3);
+    assert_eq!(chord_at(&mut d, 2.0 * bar + 0.01).0, "G");
+    // VI lasts two beats, half a bar; then the loop comes back to i.
+    assert_eq!(chord_at(&mut d, 2.5 * bar + 0.01).0, "Bm");
+    // After 10 laps the change still lands on the beat: no drift.
+    let lap = 2.5 * bar;
+    assert_eq!(chord_at(&mut d, 10.0 * lap - 0.001).0, "G");
+    assert_eq!(chord_at(&mut d, 10.0 * lap + 0.001).0, "Bm");
+}
+
+#[test]
+fn a_ritardando_stretches_the_chords() {
+    let mut d = director();
+    d.harmony(
+        0.0,
+        plan_in(
+            "A",
+            "aeolian",
+            &[("i", Length::Bars(1.0)), ("VI", Length::Bars(1.0))],
+            true,
+        ),
+        false,
+    )
+    .unwrap();
+    // 120 BPM: a bar every 2 s. Halve the tempo over 4 bars from 2 s on.
+    let secs = d
+        .tempo()
+        .ramp_seconds_for(2.0, 60.0, None, 16.0, Curve::Linear);
+    d.set_tempo(2.0, Some(60.0), None, secs, Curve::Linear, false)
+        .unwrap();
+    let end = d.tempo().time_at(4.0 + 16.0);
+    assert!((end - (2.0 + secs)).abs() < 1e-9);
+    // F, Am, F, Am fill the four bars of the ramp, so F comes back right
+    // as it ends: later than four bars at the old tempo would have taken.
+    assert!(end > 2.0 + 8.0);
+    assert_eq!(chord_at(&mut d, end - 0.01).0, "Am");
+    assert_eq!(chord_at(&mut d, end + 0.01).0, "F");
+    let s = d.state(end + 0.01);
+    assert_eq!(s.tempo.bpm, 60.0);
+    assert!(s.tempo.ramping_to.is_none());
+    assert_eq!(s.tempo.bar, 6);
+    // Halfway through, the ramp is reported.
+    let s = d.state(2.0 + secs / 2.0);
+    assert_eq!(s.tempo.ramping_to, Some(60.0));
+    assert!(s.tempo.bpm < 120.0 && s.tempo.bpm > 60.0);
+}
+
+#[test]
+fn a_tempo_change_mid_chord_keeps_what_was_played() {
+    let mut d = director();
+    d.harmony(
+        0.0,
+        plan_in(
+            "A",
+            "aeolian",
+            &[("i", Length::Bars(2.0)), ("VI", Length::Bars(2.0))],
+            true,
+        ),
+        false,
+    )
+    .unwrap();
+    // One bar (2 s) in, double the tempo: the second bar of i takes 1 s.
+    d.set_tempo(2.0, Some(240.0), None, 0.0, Curve::Linear, false)
+        .unwrap();
+    assert_eq!(chord_at(&mut d, 2.99).0, "Am");
+    assert_eq!(chord_at(&mut d, 3.01).0, "F");
+}
+
+#[test]
+fn plans_can_wait_for_the_downbeat() {
+    let mut d = director();
+    let mut p = plan_in("C", "major", &[("IV", Length::Bars(1.0))], true);
+    p.start_on = StartOn::Bar;
+    // 120 BPM 4/4 since 0: next downbeat at 4 s.
+    d.harmony(2.7, p, false).unwrap();
+    d.tick(3.0);
+    let s = d.state(3.0);
+    let h = s.harmony.unwrap();
+    assert!((h.starts_in.unwrap() - 1.0).abs() < 1e-3);
+    assert!(h.next.is_none());
+    // Nothing has moved yet.
+    let rest = value(&d, "drone_1/pitch");
+    assert!((rest - 55.0).abs() < 0.01);
+    d.tick(4.5);
+    assert!(value(&d, "drone_1/pitch") < rest, "bass gliding to F");
+    assert!(d.state(4.5).harmony.unwrap().starts_in.is_none());
+}
+
+#[test]
+fn tempo_is_validated_and_reported() {
+    let mut d = director();
+    assert!(d
+        .set_tempo(0.0, Some(5.0), None, 0.0, Curve::Linear, false)
+        .is_err());
+    d.set_tempo(
+        1.0,
+        Some(90.0),
+        Some("3/4".parse().unwrap()),
+        0.0,
+        Curve::Linear,
+        false,
+    )
+    .unwrap();
+    let s = d.state(1.0 + 2.0); // 3 beats at 90 BPM = one 3/4 bar
+    assert_eq!(s.tempo.meter, "3/4");
+    assert_eq!(s.tempo.bar, 2);
+    assert!((s.tempo.beat - 1.0).abs() < 0.011);
+    assert!((s.tempo.seconds_per_bar - 2.0).abs() < 1e-3);
 }

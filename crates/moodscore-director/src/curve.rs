@@ -44,6 +44,22 @@ impl Curve {
         }
     }
 
+    /// The area under the curve from 0 to `u` (`u` in `0..=1`), in f64.
+    ///
+    /// A tempo ramp shaped by a curve covers `∫ bpm` beats, so this is what
+    /// turns seconds into beats exactly, without stepping.
+    pub fn integral(self, u: f64) -> f64 {
+        let u = u.clamp(0.0, 1.0);
+        match self {
+            Curve::Linear => u * u / 2.0,
+            Curve::EaseIn => u.powi(4) / 4.0,
+            Curve::EaseOut => u + ((1.0 - u).powi(4) - 1.0) / 4.0,
+            Curve::EaseInOut => u.powi(3) - u.powi(4) / 2.0,
+            Curve::Exponential => expo_integral(u),
+            Curve::Logarithmic => u - (expo_integral(1.0) - expo_integral(1.0 - u)),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Curve::Linear => "linear",
@@ -73,9 +89,16 @@ impl std::str::FromStr for Curve {
     }
 }
 
+const EXPO_K: f32 = 5.0;
+
 fn expo(t: f32) -> f32 {
-    const K: f32 = 5.0;
-    ((K * t).exp() - 1.0) / (K.exp() - 1.0)
+    ((EXPO_K * t).exp() - 1.0) / (EXPO_K.exp() - 1.0)
+}
+
+/// `∫₀ᵘ expo(t) dt`.
+fn expo_integral(u: f64) -> f64 {
+    let k = EXPO_K as f64;
+    (((k * u).exp() - 1.0) / k - u) / (k.exp() - 1.0)
 }
 
 #[cfg(test)]
@@ -107,6 +130,23 @@ mod tests {
                 let v = c.apply(i as f32 / 100.0);
                 assert!(v >= prev - 1e-6, "{c:?} not monotonic");
                 prev = v;
+            }
+        }
+    }
+
+    #[test]
+    fn integrals_match_the_curves() {
+        for c in ALL {
+            // Midpoint rule, fine enough to check the closed forms.
+            let steps = 20_000;
+            let mut area = 0.0f64;
+            for i in 0..steps {
+                let t = (i as f64 + 0.5) / steps as f64;
+                area += c.apply(t as f32) as f64 / steps as f64;
+                if (i + 1) % 5_000 == 0 {
+                    let u = (i + 1) as f64 / steps as f64;
+                    assert!((c.integral(u) - area).abs() < 1e-5, "{c:?} at {u}");
+                }
             }
         }
     }

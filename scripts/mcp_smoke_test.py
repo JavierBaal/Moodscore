@@ -72,7 +72,7 @@ send("notifications/initialized", notify=True)
 tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
-    tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "get_state"},
+    tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -191,6 +191,30 @@ err, text = call("harmony", {"key": "A", "mode": "spooky", "progression": [{"cho
 check(err and "lydian" in text, "bad mode explained")
 err, text = call("harmony", {"stop": True})
 check(not err and "harmony" not in json.loads(text), "harmony stops")
+
+# Musical clock: 240 BPM 4/4 makes a bar last 1 s; chords in bars follow it.
+err, text = call("tempo", {"bpm": 240, "meter": "4/4", "downbeat": True})
+t = json.loads(text).get("tempo", {}) if not err else {}
+check(not err and t.get("bpm") == 240 and t.get("meter") == "4/4" and t.get("seconds_per_bar") == 1.0,
+      f"tempo set ({text[:80] if err else t})")
+err, text = call("harmony", {
+    "key": "C", "mode": "ionian", "glide": 0.2, "start_on": "bar",
+    "progression": [{"chord": "I", "bars": 1}, {"chord": "IV", "beats": 4}],
+})
+h = json.loads(text).get("harmony", {}) if not err else {}
+check(not err and 0 < h.get("starts_in", 0) <= 1.0, f"plan waits for the downbeat ({text[:80] if err else h})")
+time.sleep(2.6)  # downbeat (<1 s), C for a bar, then F
+p, st = pcs()
+check(p[0] == 5 and sorted(set(p)) == [0, 5, 9], f"chords in bars follow the tempo ({p})")
+err, text = call("tempo", {"bpm": 60, "over_bars": 2})
+t = json.loads(text).get("tempo", {}) if not err else {}
+check(not err and t.get("ramping_to") == 60 and t.get("ramp_seconds_remaining", 0) > 2,
+      f"ritardando ramps ({text[:80] if err else t})")
+err, text = call("tempo", {"bpm": 5})
+check(err and "between" in text, "bad bpm explained")
+err, text = call("harmony", {"key": "C", "progression": [{"chord": "I", "seconds": 2, "bars": 1}]})
+check(err and "only one" in text, "two lengths explained")
+call("harmony", {"stop": True})
 
 err, text = call("release", {"over": 1, "start_in": 30})
 out = json.loads(text)["output"]

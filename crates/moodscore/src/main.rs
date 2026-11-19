@@ -179,10 +179,11 @@ fn serve(macros_file: Option<&str>, no_audio: bool) -> Result<()> {
 /// of the performance, with three more voices joining in.
 fn demo_harmony(seconds: f32) -> Result<moodscore_director::HarmonyPlan> {
     use moodscore_director::harmony::{Chord, Key};
+    use moodscore_director::Length;
     let key = Key::new("A", "aeolian")?;
     let progression = ["i", "VI", "III", "VII"]
         .into_iter()
-        .map(|c| Ok((Chord::parse(c, &key)?, seconds / 4.0)))
+        .map(|c| Ok((Chord::parse(c, &key)?, Length::Seconds(seconds / 4.0))))
         .collect::<Result<Vec<_>>>()?;
     Ok(moodscore_director::HarmonyPlan {
         key,
@@ -191,6 +192,7 @@ fn demo_harmony(seconds: f32) -> Result<moodscore_director::HarmonyPlan> {
         pedal: None,
         glide: (seconds / 16.0).min(4.0),
         curve: Curve::EaseInOut,
+        start_on: Default::default(),
     })
 }
 
