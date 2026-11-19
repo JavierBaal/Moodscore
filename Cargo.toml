@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/moodscore-dsp",
+    "crates/moodscore-synth",
     "crates/moodscore-engine",
     "crates/moodscore-director",
     "crates/moodscore-mcp",
@@ -17,6 +18,7 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 moodscore-dsp = { path = "crates/moodscore-dsp" }
+moodscore-synth = { path = "crates/moodscore-synth" }
 moodscore-engine = { path = "crates/moodscore-engine" }
 moodscore-director = { path = "crates/moodscore-director" }
 moodscore-mcp = { path = "crates/moodscore-mcp" }

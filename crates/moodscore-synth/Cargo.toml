@@ -1,0 +1,10 @@
+[package]
+name = "moodscore-synth"
+description = "Moodscore note synth: a subtractive/FM synth built for an agent to shape sounds with"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
