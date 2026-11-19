@@ -73,33 +73,40 @@ fn changing_your_mind_mid_gesture_never_jumps() {
 }
 
 #[test]
-fn a_manual_gesture_takes_a_parameter_out_of_macro_control() {
+fn a_hand_set_parameter_stays_put_when_its_macro_moves() {
     let mut d = director();
-    d.gesture(0.0, "filter/cutoff", 2000.0, 4.0, Curve::Linear, 0.0)
+    d.gesture(0.0, "space/reverb_mix", 0.55, 4.0, Curve::Linear, 0.0)
         .unwrap();
     d.tick(4.0);
-    assert!((value(&d, "filter/cutoff") - 2000.0).abs() < 0.5);
-    // darkness keeps moving the other parameters, not the cutoff
-    d.morph(4.0, &[("darkness", 0.9)], 0.0, Curve::Linear)
+    let reso_before = value(&d, "filter/resonance");
+    // darkness moves everything it drives except the hand-set reverb
+    d.morph(4.0, &[("darkness", 0.9)], 2.0, Curve::Linear)
         .unwrap();
-    d.tick(4.0 + 0.001);
-    let state = d.state(4.001);
-    let cutoff = state
-        .params
-        .iter()
-        .find(|p| p.path == "filter/cutoff")
-        .unwrap();
-    assert_eq!(cutoff.owner, "macro:darkness");
+    d.tick(6.0);
+    assert!((value(&d, "space/reverb_mix") - 0.55).abs() < 1e-5);
+    assert!(value(&d, "filter/resonance") > reso_before);
+    let state = d.state(6.0);
+    let owner = |path: &str| {
+        state
+            .params
+            .iter()
+            .find(|p| p.path == path)
+            .unwrap()
+            .owner
+            .clone()
+    };
+    assert_eq!(owner("space/reverb_mix"), "manual");
+    assert_eq!(owner("filter/resonance"), "macro:darkness");
 }
 
 #[test]
-fn morph_reclaims_a_manual_parameter_without_a_jump() {
+fn morph_with_reclaim_takes_a_hand_set_parameter_back_without_a_jump() {
     let mut d = director();
     d.gesture(0.0, "filter/cutoff", 3000.0, 0.0, Curve::Linear, 0.0)
         .unwrap();
     d.tick(1.0);
     assert!((value(&d, "filter/cutoff") - 3000.0).abs() < 0.5);
-    d.morph(1.0, &[("darkness", 1.0)], 10.0, Curve::EaseInOut)
+    d.morph_with(1.0, &[("darkness", 1.0)], 10.0, Curve::EaseInOut, true)
         .unwrap();
     let tr = trace(&mut d, "filter/cutoff", 1.0, 12.0, 0.01);
     assert!((tr[0] - 3000.0).abs() < 1.0, "jumped to {}", tr[0]);

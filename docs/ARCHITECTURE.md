@@ -64,7 +64,7 @@ Where musical intent becomes motion.
 
 Runs on a control thread at 500 Hz and writes parameter targets to the engine.
 
-Ownership: every parameter is under either macro control or manual control. Under macro control, at most one macro *sets* it (`"mode": "set"`, the default) and any number of macros *add* an offset on top (`"mode": "add"`); the sum is clamped to the parameter's range. With no setter, offsets start from the parameter's default. `gesture` takes a parameter into manual control starting from its current value; a `morph` of any macro that drives it takes it back, blending from the manual value to the macros' value over the morph's duration.
+Ownership: every parameter is under either macro control or manual control. Under macro control, at most one macro *sets* it (`"mode": "set"`, the default) and any number of macros *add* an offset on top (`"mode": "add"`); the sum is clamped to the parameter's range. With no setter, offsets start from the parameter's default. `gesture` takes a parameter into manual control starting from its current value, and it stays there: a hand-set value is a deliberate choice, so later morphs leave it alone (the state names the macros holding off under `held_from`). A `morph` with `reclaim` takes it back, blending from the manual value to the macros' value over the morph's duration.
 
 The conductor also holds transport fades scheduled with `start_in`, and fires them from the control loop when due.
 

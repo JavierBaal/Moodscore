@@ -8,9 +8,9 @@ These are the tools an agent uses to play Moodscore. They are designed around on
 
 - Macros and most parameters are normalized to `0.0–1.0`.
 - Durations are in seconds (`over`). `0` means "as fast as is musically safe" (a short smoothing time, never a hard jump).
-- Curves: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `exponential`, `logarithmic`.
+- Curves: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `exponential`, `logarithmic`. In the schemas a curve is a plain string, validated by the server and lenient with case, spaces and hyphens (`"Ease-In"` works); unknown names are rejected with the list of valid ones.
 - When a call omits `over` or `curve`, it uses the current pace: 10 seconds and `ease_in_out` unless `set_pace` changed it. Transport fades (`start`, `release`) have their own defaults.
-- Every call returns the resulting state, so the agent never has to guess. Action tools return a brief report (output, pace, macros, and only the parameters that are moving, under `moving`); `get_state` returns everything.
+- Every call returns the resulting state, so the agent never has to guess. Action tools return a brief report: output, pace, macros (each standing for the parameters it drives) and, under `moving`, only the hand-set parameters still moving. `get_state` returns everything.
 - Invalid calls (unknown names, values out of range) return a tool error explaining what was wrong; nothing changes.
 
 ## Transport
@@ -122,7 +122,7 @@ A step value is the hit's velocity (`0` = rest). The sequencer can also target t
 
 ### `morph` ✅ Phase 1
 
-Move one or more mood macros toward new values. Parameters a macro drives come back under its control, gliding from wherever they are over the same duration.
+Move one or more mood macros toward new values. Parameters set by hand with `gesture` stay where they were put; pass `"reclaim": true` to bring them back under the macros, gliding from wherever they are over the same duration.
 
 ```json
 {
@@ -137,7 +137,7 @@ Macros: `darkness` ✅, `instability` ✅; `tension`, `density`, `motion`, `dist
 
 | Macro | 0 | 1 | Drives |
 |---|---|---|---|
-| `darkness` | open and airy | closed, low and murky | filter cutoff and resonance, sub, level, reverb |
+| `darkness` | open and airy | closed, low and murky | filter cutoff and resonance, sub, reverb |
 | `instability` | steady and pure | wavering, beating, seasick | pitch drift and detune of every drone voice | Omitted macros keep moving (or stay) as they were.
 
 ### `set_scene`
@@ -156,7 +156,7 @@ Snapshot the current state under a name, and list available scenes with short de
 
 ### `gesture` ✅ Phase 1
 
-Move a single raw parameter along a trajectory. For when a macro is too coarse. The parameter leaves macro control until the next `morph` of its macro.
+Move a single raw parameter along a trajectory. For when a macro is too coarse. The parameter leaves macro control and stays where it is put: later morphs leave it alone (`get_state` lists it as `manual`, with `held_from` naming the macros) until a `morph` with `"reclaim": true`.
 
 ```json
 {

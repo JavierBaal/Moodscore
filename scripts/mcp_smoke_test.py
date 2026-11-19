@@ -69,11 +69,20 @@ check(init["result"]["serverInfo"]["name"] == "moodscore", "initialize")
 check("drone" in init["result"].get("instructions", ""), "server instructions present")
 send("notifications/initialized", notify=True)
 
-tools = {t["name"] for t in send("tools/list")["result"]["tools"]}
+tool_list = send("tools/list")["result"]["tools"]
+tools = {t["name"] for t in tool_list}
 check(
     tools == {"start", "release", "morph", "gesture", "set_pace", "get_state"},
     f"tools/list -> {sorted(tools)}",
 )
+
+for t in tool_list:
+    curve = t["inputSchema"].get("properties", {}).get("curve")
+    if curve is not None:
+        check(
+            "$ref" not in json.dumps(curve) and "anyOf" not in json.dumps(curve),
+            f"{t['name']}: curve is a plain string in the schema ({curve.get('type')})",
+        )
 
 time.sleep(1.0)
 err, text = call("get_state", {})
@@ -129,6 +138,29 @@ check(
     not err and "params" not in brief and any(p["path"] == "drone_3/level" for p in brief["moving"]),
     "action tools return a brief report with the moving parameters",
 )
+
+err, text = call("morph", {"darkness": 0.5, "over": 1, "curve": "Ease-Out"})
+check(not err, "curve names are lenient ('Ease-Out')")
+err, text = call("morph", {"darkness": 0.5, "curve": "wobbly"})
+check(err and "ease_in_out" in text, f"unknown curve rejected: {text[:60]}...")
+check(
+    all(p["owner"] == "manual" for p in json.loads(call("morph", {"darkness": 0.6, "over": 2})[1])["moving"]),
+    "brief report groups macro-driven parameters under their macro",
+)
+
+call("gesture", {"param": "space/reverb_mix", "to": 0.7, "over": 0})
+time.sleep(0.3)
+call("morph", {"darkness": 0.1, "over": 0})
+time.sleep(0.3)
+reverb = next(p for p in json.loads(call("get_state", {})[1])["params"] if p["path"] == "space/reverb_mix")
+check(
+    reverb["owner"] == "manual" and abs(reverb["value"] - 0.7) < 1e-3 and reverb["held_from"] == ["darkness"],
+    f"a morph leaves a hand-set parameter alone ({reverb['owner']}, {reverb['value']})",
+)
+call("morph", {"darkness": 0.1, "over": 0, "reclaim": True})
+time.sleep(0.3)
+reverb = next(p for p in json.loads(call("get_state", {})[1])["params"] if p["path"] == "space/reverb_mix")
+check(reverb["owner"] == "macro:darkness" and "held_from" not in reverb, "reclaim: true takes it back")
 
 err, text = call("release", {"over": 1, "start_in": 30})
 out = json.loads(text)["output"]

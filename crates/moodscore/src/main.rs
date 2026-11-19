@@ -194,7 +194,7 @@ fn play(seconds: f32, macros_file: Option<&str>) -> Result<()> {
         let t = conductor.now() as f32 / seconds;
         if next < SCRIPT.len() && t >= SCRIPT[next].0 {
             let (_, darkness, over, curve) = SCRIPT[next];
-            conductor.morph(&[("darkness", darkness)], over * seconds, curve)?;
+            conductor.morph(&[("darkness", darkness)], over * seconds, curve, false)?;
             eprintln!(
                 "moodscore: darkness -> {darkness} over {:.0} s",
                 over * seconds

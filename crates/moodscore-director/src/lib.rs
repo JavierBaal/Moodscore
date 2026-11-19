@@ -12,9 +12,10 @@
 //!
 //! Every parameter is either under macro control or manual control. Under
 //! macro control, one macro may set it and others may add to it (see
-//! [`mapping`]). A `gesture` takes a parameter into manual control; a `morph`
-//! of any macro that drives it takes it back, gliding from wherever it is to
-//! where the macros want it.
+//! [`mapping`]). A `gesture` takes a parameter into manual control, and it
+//! stays there: a hand-set value is a deliberate choice, so later morphs
+//! leave it alone. A morph with `reclaim` takes it back, gliding from
+//! wherever it is to where the macros want it.
 //! No change ever starts from anywhere but the current value.
 //!
 //! [`Director`] is pure (time is passed in), which makes it easy to test.
@@ -329,14 +330,29 @@ impl Director {
         Ok(self.pace)
     }
 
-    /// Move one or more mood macros. Parameters a macro drives come back under
-    /// its control, gliding over the same duration.
+    /// Move one or more mood macros. Parameters set by hand with
+    /// [`gesture`](Self::gesture) stay where they are; see
+    /// [`morph_with`](Self::morph_with) to take them back.
     pub fn morph(
         &mut self,
         now: f64,
         changes: &[(&str, f32)],
         over: f32,
         curve: Curve,
+    ) -> Result<(), DirectorError> {
+        self.morph_with(now, changes, over, curve, false)
+    }
+
+    /// Move one or more mood macros. With `reclaim`, parameters these macros
+    /// drive that were set by hand come back under macro control, gliding
+    /// from where they are over the same duration.
+    pub fn morph_with(
+        &mut self,
+        now: f64,
+        changes: &[(&str, f32)],
+        over: f32,
+        curve: Curve,
+        reclaim: bool,
     ) -> Result<(), DirectorError> {
         let duration = check_duration(over)?;
         let mut resolved = Vec::with_capacity(changes.len());
@@ -366,6 +382,9 @@ impl Director {
             self.macro_lanes[mi].start(now, value, 0.0, duration, curve);
             for t in &self.macros[mi].targets {
                 let lane = &mut self.lanes[t.param];
+                if lane.owner == Owner::Manual && !reclaim {
+                    continue;
+                }
                 if lane.owner != Owner::Macros || lane.reclaim.is_some() {
                     let from = lane.out;
                     lane.owner = Owner::Macros;
@@ -510,7 +529,16 @@ impl Director {
                         (format!("macro:{}", names.join("+")), target, remaining)
                     }
                 };
+                let held_from = if lane.owner == Owner::Manual {
+                    lane.mapped_by
+                        .iter()
+                        .map(|&(mi, _)| self.macros[mi].name.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 ParamState {
+                    held_from,
                     path: p.path.clone(),
                     value: round(lane.out),
                     target: round(target),
@@ -573,6 +601,10 @@ pub struct ParamState {
     /// `"manual"`, or `"macro:<name>"` (`"macro:<a>+<b>"` when several macros drive it).
     pub owner: String,
     pub seconds_remaining: f32,
+    /// For a hand-set parameter, the macros that would drive it but are
+    /// leaving it alone (until a morph with `reclaim`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub held_from: Vec<String>,
 }
 
 /// A transport fade waiting to start.
@@ -666,9 +698,10 @@ impl Conductor {
         changes: &[(&str, f32)],
         over: f32,
         curve: Curve,
+        reclaim: bool,
     ) -> Result<(), DirectorError> {
         let now = self.now();
-        self.lock().morph(now, changes, over, curve)
+        self.lock().morph_with(now, changes, over, curve, reclaim)
     }
 
     pub fn gesture(

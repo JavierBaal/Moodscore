@@ -51,6 +51,7 @@ Pulse (cinematic rhythm, not a drum machine):
 
 Session:
 - [x] `start_in` for `start` and `release` (delayed fades, e.g. an outro that peaks before it dies)
+- [x] Live-play polish: curves as plain strings in the tool schemas, hand-set parameters stay put across morphs (`reclaim` to hand them back), brief reports grouped by macro
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library
 - `voice`, `hold`, `panic`
 

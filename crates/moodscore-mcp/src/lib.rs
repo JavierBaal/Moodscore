@@ -29,7 +29,10 @@ is now to where you send it, over the time you choose. Drones live on slow \
 change: 10 to 60 seconds is normal, 2 to 5 seconds is dramatic, under 1 second \
 is a shock.
 - Prefer `morph` (mood macros) over `gesture` (single parameters). Use \
-`gesture` for a specific touch the macros don't cover.
+`gesture` for a specific touch the macros don't cover. A parameter set with \
+`gesture` stays where you put it: later morphs leave it alone (get_state shows \
+it as manual, with held_from naming the macro). Pass reclaim: true to `morph` \
+to hand such parameters back to the macro.
 - There are six drone voices, drone_1 to drone_6. At rest only drone_1 (A1, \
 the foundation, with a sub an octave below) and a quiet drone_2 (E2, the \
 fifth) sound. drone_3 to drone_6 wait silent (level 0) on A2, C3, E3 and A3, \
@@ -49,34 +52,15 @@ the output is.
 - Talk to the person in musical, sensory terms. Don't recite numbers unless \
 they ask.";
 
-/// How a value travels from where it is to where it is going.
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CurveArg {
-    /// Constant speed.
-    Linear,
-    /// Starts slowly, speeds up.
-    EaseIn,
-    /// Starts quickly, settles gently.
-    EaseOut,
-    /// Slow start and finish. The default.
-    EaseInOut,
-    /// Barely moves, then rushes to the end. For arrivals and hits.
-    Exponential,
-    /// Moves most at first, then creeps toward the end.
-    Logarithmic,
-}
-
-impl From<CurveArg> for Curve {
-    fn from(c: CurveArg) -> Self {
-        match c {
-            CurveArg::Linear => Curve::Linear,
-            CurveArg::EaseIn => Curve::EaseIn,
-            CurveArg::EaseOut => Curve::EaseOut,
-            CurveArg::EaseInOut => Curve::EaseInOut,
-            CurveArg::Exponential => Curve::Exponential,
-            CurveArg::Logarithmic => Curve::Logarithmic,
-        }
+/// Parse an optional curve name, falling back to `default`.
+///
+/// Curves are plain strings in the tool schemas (not a JSON-schema enum):
+/// clients and models handle a simple string far more reliably.
+fn curve_or(arg: Option<&str>, default: Curve) -> Result<Curve, String> {
+    match arg {
+        None => Ok(default),
+        Some(s) if s.trim().is_empty() => Ok(default),
+        Some(s) => s.parse(),
     }
 }
 
@@ -88,8 +72,10 @@ pub struct MorphArgs {
     pub instability: Option<f32>,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
-    /// Shape of the movement. Default: the current pace.
-    pub curve: Option<CurveArg>,
+    /// Shape of the movement: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default: the current pace.
+    pub curve: Option<String>,
+    /// Also take back parameters these macros drive that were set by hand with `gesture`. Default false: hand-set parameters stay where they were put.
+    pub reclaim: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -100,8 +86,8 @@ pub struct GestureArgs {
     pub to: f32,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
-    /// Shape of the movement. Default: the current pace.
-    pub curve: Option<CurveArg>,
+    /// Shape of the movement: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default: the current pace.
+    pub curve: Option<String>,
     /// Seconds to wait before starting. Default 0.
     pub start_in: Option<f32>,
 }
@@ -113,8 +99,8 @@ pub struct GetStateArgs {}
 pub struct SetPaceArgs {
     /// Default seconds for every move that doesn't give its own. 0 means as fast as is musically safe. Omit to keep the current value.
     pub over: Option<f32>,
-    /// Default shape for every move that doesn't give its own. Omit to keep the current value.
-    pub curve: Option<CurveArg>,
+    /// Default shape for every move that doesn't give its own: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Omit to keep the current value.
+    pub curve: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -169,8 +155,9 @@ struct Report {
 enum Detail {
     /// Everything: `get_state`.
     Full,
-    /// After an action: macros without descriptions, and only the parameters
-    /// that are moving, under `moving`.
+    /// After an action: macros without descriptions, and under `moving` only
+    /// the hand-set parameters that are moving. Parameters a macro drives move
+    /// with it, so the macro entry stands for them.
     Brief,
 }
 
@@ -227,7 +214,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the output, pace, macros and the parameters that are moving."
+        description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn start(&self, Parameters(args): Parameters<StartArgs>) -> Result<String, String> {
         let (over, start_in) = check_fade(
@@ -239,7 +226,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros and the parameters that are moving."
+        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
         let (over, start_in) = check_fade(
@@ -251,7 +238,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Returns the output, pace, macros and the parameters that are moving."
+        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Parameters set by hand with gesture are left alone unless reclaim is true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn morph(&self, Parameters(args): Parameters<MorphArgs>) -> Result<String, String> {
         let mut changes = Vec::new();
@@ -263,20 +250,20 @@ impl MoodscoreServer {
         }
         let pace = self.conductor.pace();
         let over = args.over.unwrap_or(pace.over);
-        let curve = args.curve.map(Curve::from).unwrap_or(pace.curve);
+        let curve = curve_or(args.curve.as_deref(), pace.curve)?;
         self.conductor
-            .morph(&changes, over, curve)
+            .morph(&changes, over, curve, args.reclaim.unwrap_or(false))
             .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example bringing in a voice with drone_3/level, or retuning it with drone_3/pitch). Takes that parameter out of macro control until the next morph of its macro. Returns the output, pace, macros and the parameters that are moving."
+        description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example bringing in a voice with drone_3/level, or retuning it with drone_3/pitch). Takes that parameter out of macro control: later morphs leave it alone unless they pass reclaim: true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn gesture(&self, Parameters(args): Parameters<GestureArgs>) -> Result<String, String> {
         let pace = self.conductor.pace();
         let over = args.over.unwrap_or(pace.over);
-        let curve = args.curve.map(Curve::from).unwrap_or(pace.curve);
+        let curve = curve_or(args.curve.as_deref(), pace.curve)?;
         let start_in = args.start_in.unwrap_or(0.0);
         self.conductor
             .gesture(&args.param, args.to, over, curve, start_in)
@@ -285,11 +272,18 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the output, pace, macros and the parameters that are moving."
+        description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn set_pace(&self, Parameters(args): Parameters<SetPaceArgs>) -> Result<String, String> {
         self.conductor
-            .set_pace(args.over, args.curve.map(Curve::from))
+            .set_pace(
+                args.over,
+                args.curve
+                    .as_deref()
+                    .filter(|c| !c.trim().is_empty())
+                    .map(str::parse)
+                    .transpose()?,
+            )
             .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
     }
@@ -317,7 +311,9 @@ fn brief(report: &mut serde_json::Value) {
     let moving: Vec<serde_json::Value> = match obj.remove("params") {
         Some(serde_json::Value::Array(params)) => params
             .into_iter()
-            .filter(|p| p["seconds_remaining"].as_f64().unwrap_or(0.0) > 0.0)
+            .filter(|p| {
+                p["owner"] == "manual" && p["seconds_remaining"].as_f64().unwrap_or(0.0) > 0.0
+            })
             .map(|mut p| {
                 if let Some(p) = p.as_object_mut() {
                     for k in ["min", "max", "unit"] {
