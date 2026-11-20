@@ -265,6 +265,9 @@ pub fn describe(patch: &Patch) -> String {
     if g(P::Distortion) > 0.0 {
         parts.push(format!("distortion {:.2}", g(P::Distortion)));
     }
+    if g(P::Ensemble) > 0.0 {
+        parts.push(format!("ensemble {:.2}", g(P::Ensemble)));
+    }
     if g(P::ChorusMix) > 0.0 {
         parts.push(format!("chorus {:.2}", g(P::ChorusMix)));
     }

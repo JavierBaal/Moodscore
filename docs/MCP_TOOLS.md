@@ -110,7 +110,7 @@ The parameters (inside a part; as engine parameters they are `note_1/<path>`, so
 | Playing | `part/voices` (1–4; 1 is monophonic), `part/legato`, `part/glide` (s), `part/expression` (a free control for the agent), `part/analog` (0 exact; 0.3 alive; 1 an old synth: each note slightly out of tune and wandering, its cutoff and envelope times a little different) |
 | LFOs | `lfo1/…`, `lfo2/…`: `shape` (`sine`, `triangle`, `saw`, `square`, `random`), `rate` (Hz), `sync`, `division` (`1/32` … `4`, with `t` triplets and `d` dotted), `delay`, `fade` (s), `retrigger` |
 | Modulation | `mod1/…` … `mod8/…`: `source` (`mod_env`, `filter_env`, `amp_env`, `lfo1`, `lfo2`, `velocity`, `note`, `random`, `expression`), `dest` (`pitch/bend`, `voice/gain`, `voice/pan`, the oscillators' `level`, `shape`, `pw`, `fine`, `detune`, `sync`, `fm/amount`, `sub/level`, `noise/level`, `shape/fold`, `shape/drive`, `filter/cutoff`, `filter/resonance`, `filter/drive`, `lfo1/rate`, `lfo2/rate`), `amount` (−1 … 1, a fraction of the target's range; of its octaves for frequencies; `pitch/bend` spans ±12 semitones, so 0.01 ≈ a quarter tone) |
-| Effects | `fx/distortion`, `fx/chorus_mix`, `fx/chorus_rate`, `fx/chorus_depth`, `fx/delay_mix`, `fx/delay_division`, `fx/delay_feedback`, `fx/delay_width`, `fx/delay_tone` (Hz) |
+| Effects | `fx/distortion`, `fx/ensemble` (string-machine ensemble: three swaying copies per side, very wide; below ~140 Hz the sound stays mono), `fx/chorus_mix`, `fx/chorus_rate`, `fx/chorus_depth`, `fx/delay_mix`, `fx/delay_division`, `fx/delay_feedback`, `fx/delay_width`, `fx/delay_tone` (Hz) |
 | Mix | `part/level`, `part/pan`, `part/reverb_send` |
 
 ### `play_notes` ✅

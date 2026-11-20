@@ -344,6 +344,7 @@ impl Part {
         let g = |p: P| self.patch[p as usize];
         let fxp = FxParams {
             distortion: g(P::Distortion),
+            ensemble: g(P::Ensemble),
             chorus_mix: g(P::ChorusMix),
             chorus_rate: g(P::ChorusRate),
             chorus_depth: g(P::ChorusDepth),

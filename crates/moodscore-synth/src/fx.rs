@@ -6,6 +6,74 @@
 
 use crate::dsp::Drive;
 
+/// A Butterworth second-order section (RBJ), for the ensemble's crossover.
+#[derive(Clone, Copy, Debug, Default)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    z: [f32; 2],
+}
+
+impl Biquad {
+    fn new(high: bool, fc: f32, sr: f32) -> Self {
+        let w = std::f32::consts::TAU * fc / sr;
+        let (sn, cs) = w.sin_cos();
+        let alpha = sn / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
+        let a0 = 1.0 + alpha;
+        let b = if high {
+            [(1.0 + cs) / 2.0, -(1.0 + cs), (1.0 + cs) / 2.0]
+        } else {
+            [(1.0 - cs) / 2.0, 1.0 - cs, (1.0 - cs) / 2.0]
+        };
+        Self {
+            b: [b[0] / a0, b[1] / a0, b[2] / a0],
+            a: [-2.0 * cs / a0, (1.0 - alpha) / a0],
+            z: [0.0; 2],
+        }
+    }
+
+    #[inline]
+    fn run(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+}
+
+/// A Linkwitz-Riley crossover (24 dB/octave): low and high bands that add
+/// back up to the input's level.
+#[derive(Clone, Copy, Debug)]
+struct Crossover {
+    lp: [Biquad; 2],
+    hp: [Biquad; 2],
+}
+
+impl Crossover {
+    fn new(fc: f32, sr: f32) -> Self {
+        Self {
+            lp: [Biquad::new(false, fc, sr); 2],
+            hp: [Biquad::new(true, fc, sr); 2],
+        }
+    }
+
+    fn clear(&mut self) {
+        for b in self.lp.iter_mut().chain(self.hp.iter_mut()) {
+            b.z = [0.0; 2];
+        }
+    }
+
+    #[inline]
+    fn split(&mut self, x: f32) -> (f32, f32) {
+        let l1 = self.lp[0].run(x);
+        let lo = self.lp[1].run(l1);
+        let h1 = self.hp[0].run(x);
+        // LR4 (two Butterworth sections each): the bands add up in phase.
+        let hi = self.hp[1].run(h1);
+        (lo, hi)
+    }
+}
+
 /// A delay line with fractional (linear) reads.
 #[derive(Clone, Debug)]
 struct Line {
@@ -46,6 +114,7 @@ impl Line {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct FxParams {
     pub distortion: f32,
+    pub ensemble: f32,
     pub chorus_mix: f32,
     pub chorus_rate: f32,
     pub chorus_depth: f32,
@@ -60,6 +129,11 @@ pub struct FxParams {
 pub struct Fx {
     sr: f32,
     drive: [Drive; 2],
+    ensemble: Line,
+    ens_slow: f32,
+    ens_fast: f32,
+    /// Crossover per side: below it, the ensemble leaves the sound alone.
+    ens_split: [Crossover; 2],
     chorus: [Line; 2],
     chorus_phase: f32,
     echo: [Line; 2],
@@ -67,6 +141,9 @@ pub struct Fx {
     echo_time: [f32; 2],
     echo_lp: [f32; 2],
 }
+
+/// Below this the ensemble leaves the sound alone (Hz).
+const ENSEMBLE_CROSSOVER: f32 = 140.0;
 
 /// Longest echo, in seconds.
 pub const MAX_DELAY: f32 = 4.0;
@@ -79,6 +156,10 @@ impl Fx {
         Self {
             sr,
             drive: Default::default(),
+            ensemble: Line::new((0.03 * sr) as usize),
+            ens_slow: 0.0,
+            ens_fast: 0.0,
+            ens_split: [Crossover::new(ENSEMBLE_CROSSOVER, sr); 2],
             chorus: [Line::new(chorus_len), Line::new(chorus_len)],
             chorus_phase: 0.0,
             echo: [Line::new(echo_len), Line::new(echo_len)],
@@ -90,6 +171,10 @@ impl Fx {
     pub fn clear(&mut self) {
         for l in self.chorus.iter_mut().chain(self.echo.iter_mut()) {
             l.clear();
+        }
+        self.ensemble.clear();
+        for x in &mut self.ens_split {
+            x.clear();
         }
         self.echo_lp = [0.0; 2];
     }
@@ -111,11 +196,44 @@ impl Fx {
         let glide = 1.0 - (-1.0 / (0.1 * sr)).exp();
         let tone = 1.0 - (-std::f32::consts::TAU * p.delay_tone / sr).exp();
         let chorus_norm = 1.0 / (1.0 + 0.5 * p.chorus_mix);
+        // Ensemble: three taps per side on one line, swept by a slow and a
+        // fast sine (the string-machine recipe), the right side's taps a
+        // sixth of a turn from the left's.
+        let (ens_base, ens_slow_depth, ens_fast_depth) = (0.008 * sr, 0.0025 * sr, 0.0003 * sr);
+        let (slow_inc, fast_inc) = (0.62 / sr, 5.7 / sr);
+        let ens = p.ensemble.clamp(0.0, 1.0);
         for i in 0..left.len() {
             let mut x = [left[i], right[i]];
             if p.distortion > 0.0 {
                 for (c, s) in x.iter_mut().enumerate() {
                     *s = self.drive[c].process(*s, p.distortion);
+                }
+            }
+            // Split: the lows pass untouched (mono, tight), the rest goes
+            // through the ensemble.
+            let (mut lows, mut highs) = ([0.0f32; 2], [0.0f32; 2]);
+            for c in 0..2 {
+                (lows[c], highs[c]) = self.ens_split[c].split(x[c]);
+            }
+            self.ensemble.push(0.5 * (highs[0] + highs[1]));
+            self.ens_slow = (self.ens_slow + slow_inc).fract();
+            self.ens_fast = (self.ens_fast + fast_inc).fract();
+            if ens > 0.0 {
+                let mut wet = [0.0f32; 2];
+                for (side, w) in wet.iter_mut().enumerate() {
+                    for tap in 0..3 {
+                        let turn = tap as f32 / 3.0 + side as f32 / 6.0;
+                        let slow = (std::f32::consts::TAU * (self.ens_slow + turn)).sin();
+                        let fast = (std::f32::consts::TAU * (self.ens_fast + turn)).sin();
+                        *w += self
+                            .ensemble
+                            .read(ens_base + ens_slow_depth * slow + ens_fast_depth * fast);
+                    }
+                    // Three loosely related copies add up like noise: by √3.
+                    *w *= 0.577;
+                }
+                for c in 0..2 {
+                    x[c] = lows[c] + highs[c] * (1.0 - 0.5 * ens) + wet[c] * 0.9 * ens;
                 }
             }
             // Chorus: each side through its own delay line, swept in

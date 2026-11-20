@@ -436,3 +436,38 @@ fn the_ladder_makes_a_deep_round_bass() {
         "ladder {ladder:?} vs 12 dB {svf12:?}"
     );
 }
+
+#[test]
+fn the_ensemble_widens_and_keeps_the_lows_mono() {
+    let stereo = |ens: f32| {
+        let mut p = sine(|p| {
+            p.set(P::Osc1Shape, 2.0);
+            p.set(P::Ensemble, ens);
+        });
+        let spans = vec![moodscore_ear::NoteSpan {
+            start: 0.0,
+            end: 4.0,
+            notes: vec![45],
+        }];
+        let rep = measure(&mut p, &[(0, on(45))], 4 * 48_000, spans);
+        (
+            rep.metrics["mid_correlation"],
+            rep.metrics["low_correlation"],
+            rep.metrics["mid_balance_db"],
+            rep.metrics["rms_dbfs"],
+        )
+    };
+    let (dry_mid, _, _, dry_rms) = stereo(0.0);
+    let (mid, low, bal, rms) = stereo(1.0);
+    println!(
+        "ensemble: mid {dry_mid} -> {mid}, low {low}, balance {bal}, level {dry_rms} -> {rms}"
+    );
+    assert!(dry_mid > 0.99);
+    assert!(mid < 0.3, "ensemble width: mid correlation {mid}");
+    assert!(low > 0.9, "lows stay mono: {low}");
+    assert!(bal.abs() < 1.0, "centred: {bal}");
+    assert!(
+        (rms - dry_rms).abs() < 3.0,
+        "about the same level: {dry_rms} -> {rms}"
+    );
+}

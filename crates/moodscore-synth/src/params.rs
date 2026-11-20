@@ -265,6 +265,7 @@ params! {
     Lfo2Retrigger = "lfo2/retrigger", 0.0, 1.0, 0.0, Int, None, "1 restarts with each note, 0 runs freely";
 
     Distortion = "fx/distortion", 0.0, 1.0, 0.0, Linear, None, "saturation of the whole part, after the voices";
+    Ensemble = "fx/ensemble", 0.0, 1.0, 0.0, Linear, None, "string-machine ensemble: three slowly swaying copies per side, very wide and lush; the lows stay mono";
     ChorusMix = "fx/chorus_mix", 0.0, 1.0, 0.0, Linear, None, "chorus amount: thickens and widens";
     ChorusRate = "fx/chorus_rate", 0.05, 5.0, 0.4, Log, HZ, "chorus speed";
     ChorusDepth = "fx/chorus_depth", 0.0, 1.0, 0.5, Linear, None, "chorus depth";
