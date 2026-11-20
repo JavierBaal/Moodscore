@@ -328,3 +328,111 @@ fn factory_presets_sound_at_a_sane_level() {
         );
     }
 }
+
+// ---------------------------------------------------------------- analog, ladder
+
+fn measure(
+    part: &mut Part,
+    events: &[(usize, Event)],
+    frames: usize,
+    spans: Vec<moodscore_ear::NoteSpan>,
+) -> moodscore_ear::Report {
+    let (l, r) = render_lr(part, events, frames);
+    let audio = moodscore_ear::Audio {
+        sample_rate: SR,
+        left: l,
+        right: r,
+    };
+    moodscore_ear::analyze(
+        &audio,
+        &moodscore_ear::Options {
+            notes: spans,
+            ..Default::default()
+        },
+    )
+}
+
+/// Eight separate A3s, one second each.
+fn eight_notes(analog: f32) -> Vec<f32> {
+    let mut p = sine(|p| {
+        p.set(P::Analog, analog);
+        p.set(P::PartVoices, 1.0);
+    });
+    let mut ev = Vec::new();
+    let mut spans = Vec::new();
+    for i in 0..8 {
+        ev.push((i * 48_000 + 100, on(57)));
+        ev.push((i * 48_000 + 40_000, Event::NoteOff { note: 57 }));
+        spans.push(moodscore_ear::NoteSpan {
+            start: (i * 48_000 + 100) as f64 / SR as f64,
+            end: (i * 48_000 + 40_000) as f64 / SR as f64,
+            notes: vec![57],
+        });
+    }
+    let rep = measure(&mut p, &ev, 8 * 48_000, spans);
+    rep.notes.iter().map(|n| n.tuning_cents.unwrap()).collect()
+}
+
+#[test]
+fn analog_drift_makes_every_note_a_little_different() {
+    let exact = eight_notes(0.0);
+    assert!(
+        exact.iter().all(|c| c.abs() < 0.5),
+        "analog 0 is in tune: {exact:?}"
+    );
+    let alive = eight_notes(1.0);
+    let mean = alive.iter().sum::<f32>() / alive.len() as f32;
+    let spread =
+        (alive.iter().map(|c| (c - mean).powi(2)).sum::<f32>() / alive.len() as f32).sqrt();
+    assert!(spread > 1.5, "notes should differ: {alive:?}");
+    assert!(
+        alive.iter().all(|c| c.abs() < 12.0),
+        "but stay near the note: {alive:?}"
+    );
+}
+
+#[test]
+fn analog_drift_wanders_while_a_note_holds() {
+    let wobble = |analog: f32| {
+        let mut p = sine(|p| p.set(P::Analog, analog));
+        let spans = vec![moodscore_ear::NoteSpan {
+            start: 0.0,
+            end: 4.0,
+            notes: vec![57],
+        }];
+        let rep = measure(&mut p, &[(0, on(57))], 4 * 48_000, spans);
+        rep.notes[0].wobble_cents.unwrap()
+    };
+    assert!(wobble(0.0) < 0.3);
+    let w = wobble(1.0);
+    assert!(w > 0.4 && w < 6.0, "wander {w}");
+}
+
+#[test]
+fn the_ladder_makes_a_deep_round_bass() {
+    let harmonics = |filter: f32, slope: f32| {
+        let mut p = sine(|p| {
+            p.set(P::Osc1Shape, 2.0);
+            p.set(P::FilterType, filter);
+            p.set(P::FilterSlope, slope);
+            p.set(P::Cutoff, 150.0); // about 2.5 x A#1
+            p.set(P::Keytrack, 0.0);
+            p.set(P::Resonance, 0.2);
+        });
+        let spans = vec![moodscore_ear::NoteSpan {
+            start: 0.0,
+            end: 2.0,
+            notes: vec![34],
+        }];
+        let rep = measure(&mut p, &[(0, on(34))], 2 * 48_000, spans);
+        rep.notes[0].harmonics_db.clone().unwrap()
+    };
+    let svf12 = harmonics(0.0, 12.0);
+    let ladder = harmonics(3.0, 12.0);
+    // H5 (index 3: harmonics 2..8) well below the gentle filter's.
+    assert!(ladder[3] < -30.0, "ladder H5 {:?}", ladder);
+    assert!(
+        ladder[3] < svf12[3] - 10.0,
+        "ladder {ladder:?} vs 12 dB {svf12:?}"
+    );
+}

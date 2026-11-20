@@ -235,6 +235,83 @@ pub fn damping(resonance: f32, base: f32) -> f32 {
     base + (0.03 - base) * r.powf(0.7)
 }
 
+// ---------------------------------------------------------------- ladder
+
+/// A four-pole transistor-ladder low-pass (the "Moog" filter): four
+/// zero-delay-feedback one-pole stages in a resonant loop, with the loop's
+/// input saturated (`tanh`), so it thickens and growls when driven and its
+/// self-oscillation stays bounded. The feedback is solved without a unit
+/// delay, so the cutoff and resonance stay where they are set at any
+/// frequency. Resonance takes bass away in a real ladder; part of it is
+/// given back here, so a resonant bass stays a bass.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Ladder {
+    s: [f32; 4],
+}
+
+/// Coefficients for one cutoff, resonance and drive.
+#[derive(Clone, Copy, Debug)]
+pub struct LadderCoefs {
+    /// One-pole gain g / (1 + g).
+    big_g: f32,
+    /// 1 / (1 + g), to read a stage's state.
+    inv: f32,
+    /// Feedback, 0..4.06 (past 4 it self-oscillates).
+    k: f32,
+    /// Input gain into the saturating loop.
+    gain: f32,
+    /// Output make-up.
+    makeup: f32,
+}
+
+impl LadderCoefs {
+    /// `fc` over the sample rate, resonance and drive in `0..1`.
+    pub fn new(fc_over_sr: f32, resonance: f32, drive: f32) -> Self {
+        let g = (PI * fc_over_sr.clamp(1e-5, 0.45)).tan();
+        let inv = 1.0 / (1.0 + g);
+        // Just past 4 at full resonance: it sings on its own, held in by the tanh.
+        let k = 4.06 * resonance.clamp(0.0, 1.0).powf(0.8);
+        let gain = 1.0 + 6.0 * drive.clamp(0.0, 1.0);
+        Self {
+            big_g: g * inv,
+            inv,
+            k,
+            gain,
+            // Give back most of the bass the feedback takes (a little loss
+            // is the character), and level out the drive.
+            makeup: (1.0 + 0.65 * k) / gain.sqrt(),
+        }
+    }
+}
+
+impl Ladder {
+    pub fn clear(&mut self) {
+        self.s = [0.0; 4];
+    }
+
+    #[inline]
+    pub fn process(&mut self, x: f32, c: &LadderCoefs) -> f32 {
+        let g = c.big_g;
+        // What the last stage would output for a zero input, through the chain.
+        let sigma = g * g * g * self.s[0] * c.inv
+            + g * g * self.s[1] * c.inv
+            + g * self.s[2] * c.inv
+            + self.s[3] * c.inv;
+        let g4 = g * g * g * g;
+        // Solve the loop linearly, then saturate what goes into it.
+        let y4 = (g4 * x + sigma) / (1.0 + c.k * g4);
+        let u = (c.gain * (x - c.k * y4)).tanh() / c.gain;
+        let mut v = u;
+        for st in &mut self.s {
+            let w = (v - *st) * g;
+            let y = w + *st;
+            *st = y + w;
+            v = y;
+        }
+        v * c.makeup
+    }
+}
+
 // ---------------------------------------------------------------- envelope
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -383,6 +460,64 @@ mod tests {
         }
         // -60 dB in 0.2 s, idle at -80 dB from 0.5: about 0.24 s.
         assert!((n as f32 / sr - 0.243).abs() < 0.01, "{}", n as f32 / sr);
+    }
+
+    fn ladder_gain(f: f32, cutoff: f32, res: f32, amp: f32) -> f32 {
+        let sr = 48_000.0;
+        let c = LadderCoefs::new(cutoff / sr, res, 0.0);
+        let mut l = Ladder::default();
+        let mut peak = 0.0f32;
+        for n in 0..19_200 {
+            let y = l.process(amp * (2.0 * PI * f * n as f32 / sr).sin(), &c);
+            if n > 9600 {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak / amp
+    }
+
+    #[test]
+    fn ladder_is_a_steep_low_pass() {
+        let pass = ladder_gain(100.0, 1000.0, 0.0, 0.1);
+        assert!((pass - 1.0).abs() < 0.05, "passband {pass}");
+        // Four poles: about -24 dB an octave above the cutoff region.
+        let two_oct = ladder_gain(4000.0, 1000.0, 0.0, 0.1);
+        assert!(20.0 * two_oct.log10() < -40.0, "two octaves up: {two_oct}");
+    }
+
+    #[test]
+    fn ladder_resonance_peaks_and_keeps_its_bass() {
+        let flat = ladder_gain(1000.0, 1000.0, 0.0, 0.05);
+        let peaky = ladder_gain(1000.0, 1000.0, 0.8, 0.05);
+        assert!(peaky > 3.0 * flat, "resonance peak {flat} -> {peaky}");
+        let bass0 = ladder_gain(100.0, 1000.0, 0.0, 0.05);
+        let bass8 = ladder_gain(100.0, 1000.0, 0.8, 0.05);
+        assert!(
+            20.0 * (bass8 / bass0).log10() > -3.5,
+            "bass lost: {bass0} -> {bass8}"
+        );
+    }
+
+    #[test]
+    fn ladder_self_oscillates_within_bounds() {
+        let sr = 48_000.0;
+        let c = LadderCoefs::new(440.0 / sr, 1.0, 0.0);
+        let mut l = Ladder::default();
+        let mut y = Vec::new();
+        for n in 0..48_000 {
+            let x = if n == 0 { 0.5 } else { 0.0 };
+            y.push(l.process(x, &c));
+        }
+        let tail = &y[24_000..];
+        let peak = tail.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > 0.05 && peak < 2.0, "self-oscillation level {peak}");
+        // It rings near the cutoff.
+        let crossings = tail
+            .windows(2)
+            .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+            .count();
+        let hz = crossings as f32 / 0.5;
+        assert!((hz - 440.0).abs() < 60.0, "rings at {hz} Hz");
     }
 
     #[test]

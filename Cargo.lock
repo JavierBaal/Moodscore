@@ -618,6 +618,7 @@ dependencies = [
 name = "moodscore-synth"
 version = "0.0.1"
 dependencies = [
+ "moodscore-ear",
  "serde",
  "serde_json",
 ]

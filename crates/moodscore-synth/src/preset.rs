@@ -124,6 +124,7 @@ pub fn describe(patch: &Patch) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     let voices = d(P::PartVoices) as usize;
+    let analog = g(P::Analog);
     parts.push(if voices == 1 {
         let mut s = "monophonic".to_string();
         if d(P::PartLegato) >= 0.5 {
@@ -137,6 +138,9 @@ pub fn describe(patch: &Patch) -> String {
         format!("{voices} voices")
     });
 
+    if analog > 0.0 {
+        parts.push(format!("analog drift {analog:.2}"));
+    }
     for (n, level, shape, oct, semi, uni, det, sync) in [
         (
             1,
@@ -205,12 +209,20 @@ pub fn describe(patch: &Patch) -> String {
         .def()
         .choice_name(g(P::FilterType))
         .unwrap_or("low_pass");
-    let mut f = format!(
-        "{} {} dB at {} Hz",
-        ftype.replace('_', "-"),
-        d(P::FilterSlope),
-        g(P::Cutoff).round()
-    );
+    let mut f = if ftype == "ladder" {
+        let mut f = format!("ladder (Moog-style) 24 dB at {} Hz", g(P::Cutoff).round());
+        if g(P::FilterDrive) > 0.0 {
+            f += &format!(", driven {:.2}", g(P::FilterDrive));
+        }
+        f
+    } else {
+        format!(
+            "{} {} dB at {} Hz",
+            ftype.replace('_', "-"),
+            d(P::FilterSlope),
+            g(P::Cutoff).round()
+        )
+    };
     if g(P::Resonance) > 0.15 {
         f += &format!(", resonance {:.2}", g(P::Resonance));
     }

@@ -1,7 +1,7 @@
 //! One sounding note: two unison oscillator banks, sub, noise, the
 //! oversampled shaper, the filter and three envelopes.
 
-use crate::dsp::{self, Coefs, Drive, Env, Mode, Oversampler, Svf};
+use crate::dsp::{self, Coefs, Drive, Env, Ladder, LadderCoefs, Mode, Oversampler, Svf};
 use crate::lfo::Lfo;
 use crate::osc::{Noise, Osc, Shape};
 use crate::params::{DIVISION_BEATS, MOD_DESTS, MOD_SLOTS, P, PARAMS};
@@ -24,9 +24,11 @@ impl Default for Ctx {
     }
 }
 
+const N_DESTS: usize = MOD_DESTS.len();
+
 /// Parameter ids of the modulation destinations, in the order of [`MOD_DESTS`].
-fn dest_ids() -> [usize; 25] {
-    let mut ids = [usize::MAX; 25];
+fn dest_ids() -> [usize; N_DESTS] {
+    let mut ids = [usize::MAX; N_DESTS];
     for (i, d) in MOD_DESTS.iter().enumerate().skip(1) {
         ids[i] = crate::params::find(d).unwrap_or(usize::MAX);
     }
@@ -72,11 +74,14 @@ pub struct Voice {
     /// Discrete settings, fixed when the note starts.
     filter_mode: Mode,
     steep: bool,
+    ladder: bool,
+    ladders: [Ladder; 2],
+    analog: Analog,
     sub_octave: f32,
     lfo: [Lfo; 2],
     /// Random per note, `-1..1`: a modulation source.
     random: f32,
-    dests: [usize; 25],
+    dests: [usize; N_DESTS],
     /// Output gains (left, right) at the start and end of this control block.
     gain_from: (f32, f32),
     gain_to: (f32, f32),
@@ -114,6 +119,9 @@ impl Voice {
             velocity: 1.0,
             filter_mode: Mode::Low,
             steep: false,
+            ladder: false,
+            ladders: Default::default(),
+            analog: Analog::new(seed),
             sub_octave: -1.0,
             lfo: [Lfo::new(seed ^ 0x9e37), Lfo::new(seed ^ 0x7f4a)],
             random: 0.0,
@@ -163,7 +171,9 @@ impl Voice {
             _ => Mode::Low,
         };
         self.steep = d(P::FilterSlope) >= 18.0;
+        self.ladder = d(P::FilterType) as u8 == 3;
         self.sub_octave = d(P::SubOctave);
+        self.analog.new_note();
 
         if was_silent {
             for (b, (rp, bank)) in [P::Osc1Phase, P::Osc2Phase]
@@ -192,6 +202,9 @@ impl Voice {
             }
             for f in self.filter.iter_mut().flatten() {
                 f.clear();
+            }
+            for l in &mut self.ladders {
+                l.clear();
             }
             self.fm_prev = 0.0;
             self.fresh = true;
@@ -264,6 +277,8 @@ impl Voice {
         }
 
         self.live.copy_from_slice(patch);
+        self.analog
+            .advance(dt, patch[P::Analog as usize].clamp(0.0, 1.0));
         let sources = [
             0.0,
             self.menv.level,
@@ -332,7 +347,7 @@ impl Voice {
                 } else {
                     2.0 * i as f32 / (n - 1) as f32 - 1.0
                 };
-                let semis = base + t * g(de) / 100.0 * 0.5;
+                let semis = base + t * g(de) / 100.0 * 0.5 + self.analog.copy_cents(b, i) / 100.0;
                 bank.ratio[i] = (semis / 12.0).exp2();
                 let pan = (t * g(sp)).clamp(-1.0, 1.0);
                 let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
@@ -364,25 +379,26 @@ impl Voice {
             let v = &self.live;
             let g = |p: P| v[p as usize];
 
+            let [ta, td, tr] = self.analog.env_scale;
             let a = self.amp.next(
-                g(P::AmpAttack),
-                g(P::AmpDecay),
+                g(P::AmpAttack) * ta,
+                g(P::AmpDecay) * td,
                 g(P::AmpSustain),
-                g(P::AmpRelease),
+                g(P::AmpRelease) * tr,
                 sr,
             );
             let fe = self.fenv.next(
-                g(P::FenvAttack),
-                g(P::FenvDecay),
+                g(P::FenvAttack) * ta,
+                g(P::FenvDecay) * td,
                 g(P::FenvSustain),
-                g(P::FenvRelease),
+                g(P::FenvRelease) * tr,
                 sr,
             );
             self.menv.next(
-                g(P::MenvAttack),
-                g(P::MenvDecay),
+                g(P::MenvAttack) * ta,
+                g(P::MenvDecay) * td,
                 g(P::MenvSustain),
-                g(P::MenvRelease),
+                g(P::MenvRelease) * tr,
                 sr,
             );
             if self.amp.is_idle() {
@@ -391,7 +407,8 @@ impl Voice {
             }
 
             self.pitch += (self.target - self.pitch) * ctx.glide_coef;
-            let hz = 440.0 * ((self.pitch + g(P::Bend) - 69.0) / 12.0).exp2();
+            let detune = self.analog.cents / 100.0;
+            let hz = 440.0 * ((self.pitch + g(P::Bend) + detune - 69.0) / 12.0).exp2();
             let inc = hz * inv_sr;
 
             // Oscillator 2 first: it is the FM modulator.
@@ -436,10 +453,15 @@ impl Voice {
             r = self.shaper[1].process(r, |x| dr.process(dsp::fold(x, fold), drive));
 
             let track = ((self.pitch - 60.0) / 12.0 * g(P::Keytrack)).exp2();
-            let cutoff = g(P::Cutoff) * track * (g(P::FilterEnv) * fe).exp2();
+            let cutoff =
+                g(P::Cutoff) * track * (g(P::FilterEnv) * fe + self.analog.cutoff_octaves).exp2();
             let res = g(P::Resonance);
             let mode = self.filter_mode;
-            if self.steep {
+            if self.ladder {
+                let c = LadderCoefs::new(cutoff * inv_sr, res, g(P::FilterDrive));
+                l = self.ladders[0].process(l, &c);
+                r = self.ladders[1].process(r, &c);
+            } else if self.steep {
                 let c1 = Coefs::new(cutoff * inv_sr, 1.848);
                 let c2 = Coefs::new(cutoff * inv_sr, dsp::damping(res, 0.765));
                 let [fl, fr] = &mut self.filter;
@@ -457,5 +479,99 @@ impl Voice {
             left[i] += l * gain * out_l;
             right[i] += r * gain * out_r;
         }
+    }
+}
+
+/// What makes each voice a little different, as on an analog synth: a fixed
+/// detune per note (and per unison copy), a slow wander, a different cutoff
+/// and slightly different envelope times. Scaled by `part/analog`; at 0 it
+/// does nothing. It has its own random source, so it never changes the
+/// rest of the voice's randomness.
+#[derive(Clone, Debug)]
+struct Analog {
+    rng: Noise,
+    depth: f32,
+    // Per note, unit randoms (-1..1).
+    note: f32,
+    copies: [[f32; MAX_UNISON]; 2],
+    cutoff: f32,
+    env: [f32; 3],
+    // The wander: a smooth path between random points.
+    from: f32,
+    to: f32,
+    phase: f32,
+    rate: f32,
+    /// Results, refreshed each control block.
+    cents: f32,
+    cutoff_octaves: f32,
+    env_scale: [f32; 3],
+}
+
+/// At `part/analog` = 1: cents of fixed detune, cents of wander, cents
+/// between unison copies, octaves of cutoff spread, share of envelope time.
+const DETUNE_CENTS: f32 = 6.0;
+const WANDER_CENTS: f32 = 4.0;
+const COPY_CENTS: f32 = 3.0;
+const CUTOFF_OCTAVES: f32 = 0.25;
+const ENV_SHARE: f32 = 0.12;
+
+impl Analog {
+    fn new(seed: u32) -> Self {
+        let mut rng = Noise::new(seed.wrapping_mul(0x9E37_79B9) ^ 0x51ED_270B);
+        let to = rng.white();
+        let rate = 0.3 + 0.6 * rng.unit();
+        Self {
+            rng,
+            depth: 0.0,
+            note: 0.0,
+            copies: [[0.0; MAX_UNISON]; 2],
+            cutoff: 0.0,
+            env: [0.0; 3],
+            from: 0.0,
+            to,
+            phase: 0.0,
+            rate,
+            cents: 0.0,
+            cutoff_octaves: 0.0,
+            env_scale: [1.0; 3],
+        }
+    }
+
+    fn new_note(&mut self) {
+        self.note = self.rng.white();
+        for bank in &mut self.copies {
+            for c in bank.iter_mut() {
+                *c = self.rng.white();
+            }
+        }
+        self.cutoff = self.rng.white();
+        for e in &mut self.env {
+            *e = self.rng.white();
+        }
+    }
+
+    /// Move the wander on by `dt` seconds and refresh the results at `depth`.
+    fn advance(&mut self, dt: f32, depth: f32) {
+        self.depth = depth;
+        self.phase += dt * self.rate;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+            self.from = self.to;
+            self.to = self.rng.white();
+            self.rate = 0.3 + 0.6 * self.rng.unit();
+        }
+        let p = self.phase;
+        let smooth = p * p * (3.0 - 2.0 * p);
+        let wander = self.from + (self.to - self.from) * smooth;
+        self.cents = depth * (DETUNE_CENTS * self.note + WANDER_CENTS * wander);
+        self.cutoff_octaves = depth * CUTOFF_OCTAVES * self.cutoff;
+        for (s, e) in self.env_scale.iter_mut().zip(self.env) {
+            *s = 1.0 + depth * ENV_SHARE * e;
+        }
+    }
+
+    /// Extra cents for unison copy `i` of bank `b`.
+    fn copy_cents(&self, b: usize, i: usize) -> f32 {
+        self.depth * COPY_CENTS * self.copies[b][i]
     }
 }
