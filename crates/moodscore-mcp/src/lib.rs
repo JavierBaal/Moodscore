@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use moodscore_director::harmony::{parse_note, Chord, Key};
 use moodscore_director::{Conductor, Curve, HarmonyPlan, Length, Meter, StartOn};
-use moodscore_engine::{NoteEvent, PARTS};
+use moodscore_engine::PARTS;
 use moodscore_synth::{Patch, Preset};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -59,8 +59,12 @@ change it). When the person gives a tempo, a metre or a score, set it with \
 `tempo` and give chord lengths in bars or beats instead of working out \
 seconds: the chords then follow the tempo, accelerandos and ritardandos \
 included. A ramp (over or over_bars) speeds up or slows down gradually. \
-start_on: \"bar\" makes a new progression land on the next downbeat. With \
-short chords, lower glide so each chord arrives before the next.
+start_on: \"bar\" makes a new progression land on the next downbeat; \
+at_bar lands it on a given bar (get_state shows tempo.bar). Give harmony, \
+each play_notes and a release the same at_bar to make layers start and end \
+together, instead of counting seconds. A chord with a slash puts that note \
+in the bass (I/C#, IVmaj7/A). With short chords, lower glide so each chord \
+arrives before the next.
 - `release` and `start` accept start_in to delay the fade, e.g. to let an \
 unstable outro peak at full volume before it dies away.
 - If the person sets a general pace (\"everything slow today\", \"short and \
@@ -73,8 +77,10 @@ the sound is, never with a jump.
 leads, motifs. Each is a synth you shape: load a preset with `patch` \
 (`list_presets` lists them; pluck and lead come built in), adjust it with \
 `patch` set (every parameter is listed with its range in the patch \
-description and in docs), and hear it with `play_notes`, a short phrase in \
-beats that follows the tempo. When a sound is right, `save_preset` keeps it. \
+description and in docs), and hear it with `play_notes`, a phrase in beats \
+that follows the tempo. Write phrases in the short form (phrase: \
+\"B3:0.5 D4 G4:1 | C#4:0.5 E4 A4:1\"): it is compact and has no length \
+limit worth worrying about. When a sound is right, `save_preset` keeps it. \
 Notes share the drones' room. Describe sounds to the person in musical \
 words; move part/expression (with gesture on note_N/part/expression) to \
 open or shape a sound while it plays, if the preset routes it.
@@ -159,6 +165,8 @@ pub struct HarmonyArgs {
     pub reclaim: Option<bool>,
     /// When the first chord lands: "now", "beat" (next beat) or "bar" (next downbeat). Default now.
     pub start_on: Option<String>,
+    /// Land the first chord on the downbeat of this bar instead (see get_state tempo.bar). Use the same bar in play_notes to start layers together.
+    pub at_bar: Option<i64>,
     /// Stop walking the harmony: voices stay on their current notes and become free. Other fields are ignored.
     pub stop: Option<bool>,
 }
@@ -227,12 +235,20 @@ pub struct NoteStep {
 pub struct PlayNotesArgs {
     /// Which note part: 1 or 2. Default 1.
     pub part: Option<serde_json::Value>,
-    /// The phrase, step by step.
+    /// The phrase in short form: tokens like `A3:0.5` (note:beats), `A3+C4+E4:2` (chord), `r:1` (rest), `D5:1@0.9` (velocity), `F#5:1.5~` (held into the next note: slides on a legato patch). A missing length repeats the previous one; `|` bar lines are ignored. E.g. "B3:0.5 D4 G4:1 | C#4:0.5 E4 A4:1". Use this or steps.
+    pub phrase: Option<String>,
+    /// The phrase, step by step (the long form of phrase).
     pub steps: Option<Vec<NoteStep>>,
+    /// Default velocity for the phrase, 0 to 1. Default 0.8.
+    pub velocity: Option<f32>,
+    /// Default fraction of each step held. Default 0.9.
+    pub gate: Option<f32>,
     /// Play the phrase this many times. Default 1, at most 16.
     pub repeat: Option<u32>,
     /// When it starts: "now" (default), "beat" or "bar".
     pub start_on: Option<String>,
+    /// Start on the downbeat of this bar instead (see get_state tempo.bar). Use the same bar in harmony and the other part to start layers together.
+    pub at_bar: Option<i64>,
     /// Release every note of the part. Other fields are ignored.
     pub stop: Option<bool>,
 }
@@ -240,9 +256,9 @@ pub struct PlayNotesArgs {
 /// The preset each part last loaded (name and patch), if any.
 type Loaded = [Option<(String, Patch)>; PARTS];
 
-const MAX_STEPS: usize = 64;
-const MAX_REPEAT: u32 = 16;
-const MAX_EVENTS: usize = 512;
+const MAX_STEPS: usize = 1024;
+const MAX_REPEAT: u32 = 64;
+const MAX_EVENTS: usize = 8192;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetPaceArgs {
@@ -258,6 +274,8 @@ pub struct StartArgs {
     pub over: Option<f32>,
     /// Seconds to wait before the fade begins. Default 0.
     pub start_in: Option<f32>,
+    /// Begin the fade on the downbeat of this bar instead (see get_state tempo.bar).
+    pub at_bar: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -266,11 +284,42 @@ pub struct ReleaseArgs {
     pub over: Option<f32>,
     /// Seconds to wait before the fade begins, e.g. to let a gesture peak at full volume first. Default 0.
     pub start_in: Option<f32>,
+    /// Begin the fade on the downbeat of this bar instead (see get_state tempo.bar).
+    pub at_bar: Option<i64>,
 }
 
 const DEFAULT_START: f32 = 3.0;
 const DEFAULT_RELEASE: f32 = 8.0;
 const MAX_FADE: f32 = 600.0;
+
+/// `start_in`, or the seconds until bar `at_bar` (not both).
+fn wait_for(c: &Conductor, start_in: Option<f32>, at_bar: Option<i64>) -> Result<f32, String> {
+    match (start_in, at_bar) {
+        (Some(_), Some(_)) => Err("give start_in or at_bar, not both".into()),
+        (_, Some(n)) => {
+            let t = c.start_time(StartOn::AtBar(n)).map_err(|e| e.to_string())?;
+            Ok((t - c.now()).max(0.0) as f32)
+        }
+        (s, None) => Ok(s.unwrap_or(0.0)),
+    }
+}
+
+/// Where a plan or phrase starts: `start_on` ("now", "beat", "bar") or `at_bar`.
+fn start_on(start_on: Option<&str>, at_bar: Option<i64>) -> Result<StartOn, String> {
+    let named = start_on
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    match (named.as_deref(), at_bar) {
+        (Some(_), Some(_)) => Err("give start_on or at_bar, not both".into()),
+        (_, Some(n)) => Ok(StartOn::AtBar(n)),
+        (None | Some("now"), None) => Ok(StartOn::Now),
+        (Some("beat"), None) => Ok(StartOn::Beat),
+        (Some("bar") | Some("downbeat"), None) => Ok(StartOn::Bar),
+        (Some(other), None) => Err(format!(
+            "start_on '{other}': use \"now\", \"beat\" or \"bar\" (or at_bar for a bar number)"
+        )),
+    }
+}
 
 fn check_fade(over: f32, start_in: f32) -> Result<(f32, f32), String> {
     if !(over.is_finite() && (0.0..=MAX_FADE).contains(&over)) {
@@ -391,10 +440,8 @@ impl MoodscoreServer {
         description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn start(&self, Parameters(args): Parameters<StartArgs>) -> Result<String, String> {
-        let (over, start_in) = check_fade(
-            args.over.unwrap_or(DEFAULT_START),
-            args.start_in.unwrap_or(0.0),
-        )?;
+        let wait = wait_for(&self.conductor, args.start_in, args.at_bar)?;
+        let (over, start_in) = check_fade(args.over.unwrap_or(DEFAULT_START), wait)?;
         self.conductor.fade(1.0, over, start_in);
         Ok(self.report(Detail::Brief))
     }
@@ -403,10 +450,8 @@ impl MoodscoreServer {
         description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
-        let (over, start_in) = check_fade(
-            args.over.unwrap_or(DEFAULT_RELEASE),
-            args.start_in.unwrap_or(0.0),
-        )?;
+        let wait = wait_for(&self.conductor, args.start_in, args.at_bar)?;
+        let (over, start_in) = check_fade(args.over.unwrap_or(DEFAULT_RELEASE), wait)?;
         self.conductor.fade(0.0, over, start_in);
         Ok(self.report(Detail::Brief))
     }
@@ -446,7 +491,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A new plan starts from its first chord now (or on the next beat or downbeat with start_on), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
+        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A slash puts a note in the bass: I/C#, IVmaj7/A (it wins over a pedal for that chord). A new plan starts from its first chord now (or on the next beat or downbeat with start_on, or on a given bar with at_bar), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
     )]
     fn harmony(&self, Parameters(args): Parameters<HarmonyArgs>) -> Result<String, String> {
         if args.stop.unwrap_or(false) {
@@ -493,21 +538,7 @@ impl MoodscoreServer {
             return Err("glide must be between 0 and 600 seconds".into());
         }
         let curve = curve_or(args.curve.as_deref(), Curve::EaseInOut)?;
-        let start_on = match args
-            .start_on
-            .as_deref()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            None | Some("") | Some("now") => StartOn::Now,
-            Some("beat") => StartOn::Beat,
-            Some("bar") | Some("downbeat") => StartOn::Bar,
-            Some(other) => {
-                return Err(format!(
-                    "start_on '{other}': use \"now\", \"beat\" or \"bar\""
-                ))
-            }
-        };
+        let start_on = start_on(args.start_on.as_deref(), args.at_bar)?;
         let plan = HarmonyPlan {
             key,
             progression,
@@ -663,68 +694,81 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Play a short phrase on a note part, to hear its sound or to place a motif: steps of notes or chords with lengths in beats, following the tempo (set with tempo). The notes start on their exact sample. Use it to audition a patch while shaping it, or for a motif over the drones; for long melodies use a proper sequencer instead. stop: true releases the part's notes. Returns the output and the note parts."
+        description = "Play a phrase on a note part: notes or chords with lengths in beats, following the tempo (set with tempo), each starting on its exact sample. Prefer the short form, phrase: \"B3:0.5 D4 G4:1 | A3+C#4+E4:2@0.6 r:1 F#5:1.5~\" (note:beats, chords with +, r for rest, @velocity, ~ to hold into the next note; a missing length repeats the last). Up to 1024 steps, repeat up to 64. Start now, on the next beat or bar (start_on), or on a given bar (at_bar: use the same bar as harmony and the other part so layers start together). A new phrase adds to what is waiting; stop: true cancels what is waiting and releases the part. Returns the output and the note parts (notes waiting, when the phrase ends)."
     )]
     fn play_notes(&self, Parameters(args): Parameters<PlayNotesArgs>) -> Result<String, String> {
         let part = notes::part_index(args.part.as_ref())?;
         if args.stop.unwrap_or(false) {
-            self.conductor
-                .schedule_notes(part, &[(0.0, NoteEvent::AllOff)]);
+            self.conductor.stop_notes(part);
             return Ok(self.report(Detail::Brief));
-        }
-        let raw = args.steps.filter(|s| !s.is_empty()).ok_or(
-            "play_notes needs steps, e.g. [{\"notes\": \"A3\", \"beats\": 1}], or stop: true",
-        )?;
-        if raw.len() > MAX_STEPS {
-            return Err(format!("a phrase can have at most {MAX_STEPS} steps"));
         }
         let repeat = args.repeat.unwrap_or(1);
         if !(1..=MAX_REPEAT).contains(&repeat) {
             return Err(format!("repeat must be between 1 and {MAX_REPEAT}"));
         }
-        let mut steps = Vec::with_capacity(raw.len());
-        for (i, s) in raw.iter().enumerate() {
-            let at = |e: String| format!("step {} ({}): {e}", i + 1, s.notes);
-            let beats = s.beats.unwrap_or(1.0);
+        let velocity = args.velocity.unwrap_or(0.8);
+        let gate = args.gate.unwrap_or(0.9);
+        let check = |velocity: f32, gate: f32, beats: f32| -> Result<(), String> {
             if !beats.is_finite() || !(0.0625..=64.0).contains(&beats) {
-                return Err(at("beats must be between 1/16 and 64".into()));
+                return Err("beats must be between 1/16 and 64".into());
             }
-            let velocity = s.velocity.unwrap_or(0.8);
             if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
-                return Err(at("velocity must be between 0 and 1".into()));
+                return Err("velocity must be between 0 and 1".into());
             }
-            let gate = s.gate.unwrap_or(0.9);
             if !gate.is_finite() || !(0.05..=2.0).contains(&gate) {
-                return Err(at("gate must be between 0.05 and 2".into()));
+                return Err("gate must be between 0.05 and 2".into());
             }
-            let notes = notes::parse_notes(&s.notes).map_err(at)?;
-            if notes.len() > 8 {
-                return Err(at("at most 8 notes at once".into()));
+            Ok(())
+        };
+        check(velocity, gate, 1.0)?;
+        let steps: Vec<notes::Step> = match (args.phrase.as_deref(), &args.steps) {
+            (Some(_), Some(s)) if !s.is_empty() => {
+                return Err("give phrase or steps, not both".into())
             }
-            steps.push(notes::Step {
-                notes,
-                beats,
-                velocity,
-                gate,
-            });
+            (Some(p), _) if !p.trim().is_empty() => {
+                let steps = notes::parse_phrase(p, velocity, gate)?;
+                for (i, s) in steps.iter().enumerate() {
+                    check(s.velocity, s.gate, s.beats)
+                        .map_err(|e| format!("token {}: {e}", i + 1))?;
+                }
+                steps
+            }
+            (_, Some(raw)) if !raw.is_empty() => {
+                let mut steps = Vec::with_capacity(raw.len());
+                for (i, s) in raw.iter().enumerate() {
+                    let at = |e: String| format!("step {} ({}): {e}", i + 1, s.notes);
+                    let beats = s.beats.unwrap_or(1.0);
+                    let (v, g) = (s.velocity.unwrap_or(velocity), s.gate.unwrap_or(gate));
+                    check(v, g, beats).map_err(at)?;
+                    let notes = notes::parse_notes(&s.notes).map_err(at)?;
+                    if notes.len() > 8 {
+                        return Err(at("at most 8 notes at once".into()));
+                    }
+                    steps.push(notes::Step {
+                        notes,
+                        beats,
+                        velocity: v,
+                        gate: g,
+                    });
+                }
+                steps
+            }
+            _ => {
+                return Err(
+                    "play_notes needs a phrase, e.g. \"A3:1 C4 E4:2\", or steps, or stop: true"
+                        .into(),
+                )
+            }
+        };
+        if steps.len() > MAX_STEPS {
+            return Err(format!("a phrase can have at most {MAX_STEPS} steps"));
         }
         let tempo = self.conductor.tempo();
         let now = self.conductor.now();
-        let start = match args
-            .start_on
-            .as_deref()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            None | Some("") | Some("now") => now,
-            Some("beat") => tempo.next_beat(now),
-            Some("bar") | Some("downbeat") => tempo.next_bar(now),
-            Some(other) => {
-                return Err(format!(
-                    "start_on '{other}': use \"now\", \"beat\" or \"bar\""
-                ))
-            }
-        };
+        let start = self
+            .conductor
+            .start_time(start_on(args.start_on.as_deref(), args.at_bar)?)
+            .map_err(|e| e.to_string())?;
         let events = notes::schedule(&tempo, start, &steps, repeat);
         if events.len() > MAX_EVENTS {
             return Err(format!(
@@ -732,13 +776,9 @@ impl MoodscoreServer {
                 events.len()
             ));
         }
-        let queued = self.conductor.schedule_notes(part, &events);
-        if queued < events.len() {
-            return Err(format!(
-                "only {queued} of {} note events fit in the queue; wait for the phrase to play",
-                events.len()
-            ));
-        }
+        self.conductor
+            .schedule_notes(part, &events)
+            .map_err(|e| e.to_string())?;
         let mut value: serde_json::Value =
             serde_json::from_str(&self.report(Detail::Brief)).unwrap_or_default();
         if let Some(obj) = value.as_object_mut() {

@@ -650,3 +650,47 @@ fn tempo_is_validated_and_reported() {
     assert!((s.tempo.beat - 1.0).abs() < 0.011);
     assert!((s.tempo.seconds_per_bar - 2.0).abs() < 1e-3);
 }
+
+#[test]
+fn plans_can_start_on_a_given_bar() {
+    let mut d = director();
+    // 120 BPM 4/4 from 0: bar 3 starts at 4 s.
+    let mut p = plan_in("C", "major", &[("IV", Length::Bars(1.0))], true);
+    p.start_on = StartOn::AtBar(3);
+    d.harmony(0.5, p.clone(), false).unwrap();
+    let h = d.state(1.0).harmony.unwrap();
+    assert!((h.starts_in.unwrap() - 3.0).abs() < 1e-3);
+    d.tick(3.9);
+    assert!(
+        (value(&d, "drone_1/pitch") - 55.0).abs() < 0.01,
+        "still waiting"
+    );
+    d.tick(4.5);
+    assert!(value(&d, "drone_1/pitch") < 55.0, "gliding to F from bar 3");
+    // A bar that has passed is refused, and says where we are.
+    p.start_on = StartOn::AtBar(2);
+    let e = d.harmony(5.0, p, false).unwrap_err().to_string();
+    assert!(e.contains("bar 3 now"), "{e}");
+}
+
+#[test]
+fn slash_chords_move_the_bass() {
+    let mut d = director();
+    let mut p = plan_in(
+        "D",
+        "ionian",
+        &[("I", Length::Seconds(2.0)), ("I/C#", Length::Seconds(2.0))],
+        false,
+    );
+    p.glide = 0.2;
+    d.harmony(0.0, p, false).unwrap();
+    d.tick(1.0);
+    let before = value(&d, "drone_1/pitch");
+    d.tick(5.0);
+    let after = value(&d, "drone_1/pitch");
+    // Pitches are in Hz: back to pitch classes.
+    let pc = |hz: f32| (69.0 + 12.0 * (hz / 440.0).log2()).round() as i32 % 12;
+    assert_eq!(pc(before), 2, "D in the bass ({before} Hz)");
+    assert_eq!(pc(after), 1, "C# in the bass ({after} Hz)");
+    assert_eq!(d.state(5.0).harmony.unwrap().chord.name, "D/C#");
+}

@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use moodscore_engine::{EngineHandle, ParamInfo, Scale};
+use moodscore_engine::{EngineHandle, NoteEvent, NoteMsg, ParamInfo, Scale};
 use serde::Serialize;
 
 pub use curve::Curve;
@@ -290,6 +290,8 @@ pub enum StartOn {
     Beat,
     /// On the next downbeat.
     Bar,
+    /// On the downbeat of this bar (it must not have passed).
+    AtBar(i64),
 }
 
 /// A harmonic plan: a key and a progression the director walks through.
@@ -624,11 +626,7 @@ impl Director {
                 lane.hand_set = false;
             }
         }
-        let starts_at = match plan.start_on {
-            StartOn::Now => now,
-            StartOn::Beat => self.tempo.next_beat(now),
-            StartOn::Bar => self.tempo.next_bar(now),
-        };
+        let starts_at = self.start_time(now, plan.start_on)?;
         self.harmony = Some(HarmonyRun {
             plan,
             starts_at,
@@ -644,6 +642,31 @@ impl Director {
     /// The tempo map in force.
     pub fn tempo(&self) -> &TempoMap {
         &self.tempo
+    }
+
+    /// When something asked to start `on` would start, seen from `now`.
+    pub fn start_time(&self, now: f64, on: StartOn) -> Result<f64, DirectorError> {
+        Ok(match on {
+            StartOn::Now => now,
+            StartOn::Beat => self.tempo.next_beat(now),
+            StartOn::Bar => self.tempo.next_bar(now),
+            StartOn::AtBar(n) => {
+                let t = self.tempo.time_of_bar(n);
+                // A few milliseconds of slack: "this bar" said right on it.
+                if t < now - 0.005 {
+                    let current = self.tempo.position(now).bar;
+                    return Err(DirectorError::Invalid(format!(
+                        "bar {n} has passed; it is bar {current} now"
+                    )));
+                }
+                if t - now > MAX_DURATION as f64 {
+                    return Err(DirectorError::Invalid(format!(
+                        "bar {n} is more than {MAX_DURATION} seconds away"
+                    )));
+                }
+                t.max(now)
+            }
+        })
     }
 
     /// Change tempo and/or metre at `now`. See [`TempoMap::changed`]: the beat
@@ -1074,7 +1097,17 @@ pub struct Conductor {
     clock: Instant,
     running: Arc<AtomicBool>,
     pending_fade: Arc<Mutex<Option<PendingFade>>>,
+    /// Notes waiting to be handed to the engine, by frame. They go when they
+    /// are less than [`NOTE_LOOKAHEAD`] away, so the audio thread only ever
+    /// holds a few, and a stop can still cancel the rest.
+    agenda: Arc<Mutex<Vec<NoteMsg>>>,
 }
+
+/// How far ahead notes are handed to the engine.
+const NOTE_LOOKAHEAD: f64 = 0.2;
+
+/// Most notes waiting in the agenda.
+pub const MAX_AGENDA: usize = 20_000;
 
 impl Conductor {
     /// Push the director's starting values to the engine and start the
@@ -1090,6 +1123,7 @@ impl Conductor {
             clock: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
             pending_fade: Arc::new(Mutex::new(None)),
+            agenda: Arc::new(Mutex::new(Vec::new())),
         };
         let loop_c = c.clone();
         thread::Builder::new()
@@ -1121,6 +1155,7 @@ impl Conductor {
                     }
                 }
             }
+            self.feed_notes();
             thread::sleep(period);
         }
     }
@@ -1193,6 +1228,13 @@ impl Conductor {
         *self.lock().tempo()
     }
 
+    /// When something asked to start `on` would start (see
+    /// [`Director::start_time`]), on this clock.
+    pub fn start_time(&self, on: StartOn) -> Result<f64, DirectorError> {
+        let now = self.now();
+        self.lock().start_time(now, on)
+    }
+
     /// Set several parameters by hand at once (see [`Director::set_params`]).
     pub fn set_params(&self, changes: &[(String, f32)], over: f32) -> Result<(), DirectorError> {
         let now = self.now();
@@ -1207,28 +1249,81 @@ impl Conductor {
             .collect()
     }
 
+    fn agenda(&self) -> MutexGuard<'_, Vec<NoteMsg>> {
+        self.agenda.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Play note events on `part`, each at a time on the director's clock
-    /// (see [`now`](Self::now)). Times already past play at once. The
-    /// engine starts each one on its exact sample, a few milliseconds after
-    /// the time asked for so that none arrives late. Returns how many were
-    /// queued (the rest did not fit).
+    /// (see [`now`](Self::now)). Times already past play at once. Each is
+    /// fixed to an engine frame now, so a phrase keeps its exact timing,
+    /// and starts on that sample, a few milliseconds after the time asked
+    /// for so that none arrives late. Fails, queueing nothing, if the
+    /// agenda would overflow.
     pub fn schedule_notes(
         &self,
         part: usize,
-        events: &[(f64, moodscore_engine::NoteEvent)],
-    ) -> usize {
+        events: &[(f64, NoteEvent)],
+    ) -> Result<(), DirectorError> {
         /// Headroom so the first note of a phrase is never late.
         const MARGIN: f64 = 0.03;
         let now = self.now();
         let frame = self.engine.frames_rendered();
         let sr = self.engine.sample_rate() as f64;
-        events
-            .iter()
-            .take_while(|(t, e)| {
-                let ahead = ((t - now).max(0.0) + MARGIN) * sr;
-                self.engine.note(part, frame + ahead as u64, *e)
-            })
-            .count()
+        let mut agenda = self.agenda();
+        if agenda.len() + events.len() > MAX_AGENDA {
+            return Err(DirectorError::Invalid(format!(
+                "{} notes are already waiting; at most {MAX_AGENDA}",
+                agenda.len()
+            )));
+        }
+        for &(t, event) in events {
+            let ahead = ((t - now).max(0.0) + MARGIN) * sr;
+            agenda.push(NoteMsg {
+                part,
+                frame: frame + ahead as u64,
+                event,
+            });
+        }
+        // Stable: events at the same frame keep their order.
+        agenda.sort_by_key(|m| m.frame);
+        drop(agenda);
+        self.feed_notes();
+        Ok(())
+    }
+
+    /// Cancel every note still waiting for `part` and release what sounds.
+    pub fn stop_notes(&self, part: usize) {
+        self.agenda().retain(|m| m.part != part);
+        let frame = self.engine.frames_rendered();
+        self.engine.note(part, frame, NoteEvent::AllOff);
+    }
+
+    /// Notes waiting in the agenda for `part`, and the director time of the
+    /// last one (when the phrase ends).
+    pub fn pending_notes(&self, part: usize) -> (usize, Option<f64>) {
+        let agenda = self.agenda();
+        let mine: Vec<&NoteMsg> = agenda.iter().filter(|m| m.part == part).collect();
+        let last = mine.last().map(|m| {
+            let ahead = m.frame as f64 - self.engine.frames_rendered() as f64;
+            self.now() + ahead / self.engine.sample_rate() as f64
+        });
+        (mine.len(), last)
+    }
+
+    /// Hand the engine every note due within the lookahead.
+    fn feed_notes(&self) {
+        let horizon = self.engine.frames_rendered()
+            + (NOTE_LOOKAHEAD * self.engine.sample_rate() as f64) as u64;
+        let mut agenda = self.agenda();
+        let due = agenda.partition_point(|m| m.frame < horizon);
+        let mut sent = 0;
+        for m in &agenda[..due] {
+            if !self.engine.note(m.part, m.frame, m.event) {
+                break;
+            }
+            sent += 1;
+        }
+        agenda.drain(..sent);
     }
 
     pub fn set_pace(&self, over: Option<f32>, curve: Option<Curve>) -> Result<Pace, DirectorError> {

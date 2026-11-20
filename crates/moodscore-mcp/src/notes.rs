@@ -138,15 +138,27 @@ pub struct PartStatus {
     pub preset: Option<String>,
     pub modified: bool,
     pub sounding: usize,
+    /// Notes scheduled but not yet played, and seconds until the last one.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub waiting: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phrase_ends_in: Option<f64>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 pub fn status(c: &Conductor, part: usize, loaded: &Option<(String, Patch)>) -> PartStatus {
     let patch = current_patch(c, part);
+    let (waiting, last) = c.pending_notes(part);
     PartStatus {
         part: part_prefix(part),
         preset: loaded.as_ref().map(|(n, _)| n.clone()),
         modified: loaded.as_ref().is_some_and(|(_, p)| differs(p, &patch)),
         sounding: c.engine().active_notes(part),
+        waiting,
+        phrase_ends_in: last.map(|t| ((t - c.now()).max(0.0) * 100.0).round() / 100.0),
     }
 }
 
@@ -216,6 +228,73 @@ pub fn parse_notes(s: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// Parse the short form of a phrase. Tokens, separated by spaces:
+/// `A3:0.5` (note:beats), `A3+C4+E4:2` (chord), `r:1` or `-:1` (rest),
+/// `D5:1@0.9` (velocity), `F#5:1.5~` (held into the next step). A missing
+/// length repeats the previous one (1 at the start); `|` is ignored. Beats
+/// may be written as fractions (`1/2`, `3/4`).
+pub fn parse_phrase(s: &str, velocity: f32, gate: f32) -> Result<Vec<Step>, String> {
+    let mut steps = Vec::new();
+    let mut beats = 1.0f32;
+    for (i, raw) in s.split_whitespace().enumerate() {
+        if raw.chars().all(|c| c == '|') {
+            continue;
+        }
+        let at = |e: String| format!("token {} ('{raw}'): {e}", i + 1);
+        let mut tok = raw;
+        let held = tok.ends_with('~');
+        tok = tok.trim_end_matches('~');
+        let (tok, vel) = match tok.split_once('@') {
+            Some((t, v)) => (
+                t,
+                v.parse::<f32>()
+                    .map_err(|_| at(format!("'{v}' is not a velocity (0 to 1)")))?,
+            ),
+            None => (tok, velocity),
+        };
+        let (pitches, len) = match tok.split_once(':') {
+            Some((p, l)) => (p, Some(l)),
+            None => (tok, None),
+        };
+        if let Some(l) = len {
+            beats = parse_beats(l).ok_or_else(|| at(format!("'{l}' is not a length in beats")))?;
+        }
+        let notes = if matches!(pitches, "r" | "R" | "-" | "rest") {
+            Vec::new()
+        } else {
+            let n = parse_notes(&pitches.replace('+', " ")).map_err(at)?;
+            if n.is_empty() {
+                return Err(at("no note".into()));
+            }
+            if n.len() > 8 {
+                return Err(at("at most 8 notes at once".into()));
+            }
+            n
+        };
+        steps.push(Step {
+            notes,
+            beats,
+            velocity: vel,
+            gate: if held { gate.max(1.05) } else { gate },
+        });
+    }
+    if steps.is_empty() {
+        return Err("the phrase has no notes or rests".into());
+    }
+    Ok(steps)
+}
+
+/// `0.5`, `2`, `1/2`, `3/4`.
+fn parse_beats(s: &str) -> Option<f32> {
+    match s.split_once('/') {
+        Some((a, b)) => {
+            let (a, b) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
+            (b != 0.0).then(|| a / b)
+        }
+        None => s.trim().parse().ok(),
+    }
+}
+
 /// Turn a phrase into timed note events on the director's clock, starting
 /// at `start` (seconds), repeated `repeat` times, following `tempo`.
 pub fn schedule(
@@ -249,4 +328,25 @@ pub fn schedule(
     }
     out.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     out.into_iter().map(|(t, _, e)| (t, e)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_phrases_parse() {
+        let s = parse_phrase("B3:0.5 D4 G4:1 | A3+C#4+E4:2@0.6 r:1/2 F#5:1.5~", 0.8, 0.9).unwrap();
+        let beats: Vec<f32> = s.iter().map(|s| s.beats).collect();
+        assert_eq!(beats, [0.5, 0.5, 1.0, 2.0, 0.5, 1.5]);
+        assert_eq!(s[0].notes, [59]);
+        assert_eq!(s[3].notes, [57, 61, 64]);
+        assert_eq!(s[3].velocity, 0.6);
+        assert!(s[4].notes.is_empty());
+        assert_eq!(s[5].gate, 1.05);
+        assert_eq!(s[0].gate, 0.9);
+        for bad in ["A3:x", "H3:1", "A:1", "A3:1@loud", "|"] {
+            assert!(parse_phrase(bad, 0.8, 0.9).is_err(), "{bad}");
+        }
+    }
 }

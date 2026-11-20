@@ -49,7 +49,7 @@ A patch is a flat table of numbers (`params.rs`), so the engine smooths it like 
 
 ### moodscore-engine
 
-Owns the audio callback, the Faust DSP and the two note parts. Its parameters are Faust's followed by `note_1/…` and `note_2/…`. Targets cross from the control thread as one atomic per parameter (last value wins, which is exactly right for targets); counts and choices (`Scale::Discrete`) are taken as they are, never smoothed. Notes cross through a lock-free queue (`rtrb`), each stamped with its frame; the audio thread keeps them in a preallocated list until due. Every 32 frames the audio thread:
+Owns the audio callback, the Faust DSP and the two note parts. Its parameters are Faust's followed by `note_1/…` and `note_2/…`. Targets cross from the control thread as one atomic per parameter (last value wins, which is exactly right for targets); counts and choices (`Scale::Discrete`) are taken as they are, never smoothed. Notes cross through a lock-free queue (`rtrb`), each stamped with its frame; the audio thread keeps them in a preallocated list until due. The conductor holds longer phrases in its own agenda, fixed to frames when scheduled (so a phrase keeps its timing) and handed over about 200 ms before each note, so the audio thread only ever holds a few and a stop can still cancel the rest. Every 32 frames the audio thread:
 
 1. Reads the targets.
 2. Smooths every parameter toward its target (30 ms time constant; in the log domain for frequencies), so no change reaches the DSP as a step.

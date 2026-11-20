@@ -260,6 +260,35 @@ check(not err and r.get("params", {}).get("filter/cutoff") == 900 and r.get("par
 err, text = call("play_notes", {"stop": True})
 check(not err, "play_notes stop")
 
+# Bars by number: layers that start together, phrases in short form.
+call("tempo", {"bpm": 120, "meter": "4/4"})
+bar = json.loads(call("get_state", {})[1])["tempo"]["bar"]
+err, text = call("harmony", {"key": "D", "mode": "ionian", "at_bar": bar + 2, "glide": 0.2,
+                             "progression": [{"chord": "I", "beats": 2}, {"chord": "I/C#", "beats": 2}]})
+h = json.loads(text).get("harmony", {}) if not err else {}
+check(not err and h.get("starts_in", 0) > 0, f"harmony waits for bar {bar + 2} ({text[:80] if err else h})")
+err, text = call("play_notes", {"part": 1, "at_bar": bar + 2, "phrase": "D4:0.5 F#4 A4:1 | C#4+E4+A4:2@0.6 r:1"})
+r = json.loads(text) if not err else {}
+check(not err and abs(r["phrase"]["starts_in"] - h.get("starts_in", -9)) < 0.05,
+      f"phrase and harmony start on the same bar ({text[:100] if err else r['phrase']})")
+err, text = call("play_notes", {"part": 1, "at_bar": max(1, bar - 1), "phrase": "D4"})
+check(err and "has passed" in text, f"a passed bar is refused: {text[:60]}")
+err, text = call("play_notes", {"part": 2, "phrase": " ".join(["B3:0.25", "D4", "G4", "D4"] * 75)})
+st = json.loads(call("get_state", {})[1])
+check(not err and st["notes"][1].get("waiting", 0) > 400, f"long phrases are fine ({text[:80] if err else st['notes'][1]})")
+err, text = call("play_notes", {"part": 2, "stop": True})
+st = json.loads(call("get_state", {})[1])
+check(not err and st["notes"][1].get("waiting", 0) == 0, "stop cancels what is waiting")
+err, text = call("play_notes", {"phrase": "A3:x"})
+check(err and "token 1" in text, f"bad token explained: {text[:60]}")
+err, text = call("release", {"at_bar": bar + 6, "over": 2})
+f = json.loads(text)["output"].get("scheduled_fade") if not err else None
+check(not err and f and f["starts_in"] > 4, f"release waits for its bar ({f})")
+call("start", {"over": 0.5})
+err, text = call("harmony", {"key": "D", "progression": [{"chord": "V/V", "beats": 2}]})
+check(err and "secondary" in text, f"V/V explained: {text[:80]}")
+call("harmony", {"stop": True})
+
 err, text = call("release", {"over": 1, "start_in": 30})
 out = json.loads(text)["output"]
 check(

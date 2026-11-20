@@ -25,7 +25,7 @@ Fade in from silence. After a `release`, brings the sound back exactly as it was
 { "over": 3, "start_in": 0 }
 ```
 
-`over` defaults to 3 seconds. `start_in` (Phase 2 ✅) delays the fade.
+`over` defaults to 3 seconds. `start_in` (Phase 2 ✅) delays the fade; `at_bar` (✅) starts it on the downbeat of that bar instead (worked out with the tempo map at the time of the call).
 
 ### `release` ✅
 
@@ -35,7 +35,7 @@ Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should
 { "over": 12, "start_in": 40 }
 ```
 
-`over` defaults to 8 seconds. `start_in` (Phase 2 ✅) delays the fade, so a gesture can peak at full volume before the sound dies away (an unstable outro, say). A waiting fade shows up in `output.scheduled_fade`; any new `start` or `release` replaces it.
+`over` defaults to 8 seconds. `start_in` (Phase 2 ✅) delays the fade, or `at_bar` (✅) starts it on a given bar's downbeat (an ending timed to the music, no seconds to count), so a gesture can peak at full volume before the sound dies away (an unstable outro, say). A waiting fade shows up in `output.scheduled_fade`; any new `start` or `release` replaces it.
 
 ### `set_pace` ✅ Phase 2
 
@@ -70,9 +70,9 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 ```
 
 - **`key`**: tonic (`A`, `F#`, `Bb`). **`mode`**: `ionian`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `aeolian` (default), `locrian`, or `major` / `minor`. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous, mixolydian open and heroic, locrian unstable.
-- **Chords** are Roman numerals in the key. Case is quality: upper case major, lower case minor, so `V` in a minor key is the borrowed major V. `b`/`#` before the numeral alters the root (`bVI`, `bVII`). `°` (or `o`, `dim`) diminished, `+` (or `aug`) augmented, `ø` half-diminished. Colour, in any order after the numeral: `7` (the mode's seventh), `maj7`, `sus2`, `sus4`, `add9` (the mode's ninth). Notes are spelled properly by letter (`iv` in C major is F A♭ C).
+- **Chords** are Roman numerals in the key. Case is quality: upper case major, lower case minor, so `V` in a minor key is the borrowed major V. `b`/`#` before the numeral alters the root (`bVI`, `bVII`). `°` (or `o`, `dim`) diminished, `+` (or `aug`) augmented, `ø` half-diminished. Colour, in any order after the numeral: `7` (the mode's seventh), `maj7`, `sus2`, `sus4`, `add9` (the mode's ninth). A slash and a note name put that note in the bass: `I/C#`, `IVmaj7/A` (it wins over a `pedal` for that chord; `V/V` is refused: write the secondary dominant itself). Notes are spelled properly by letter (`iv` in C major is F A♭ C).
 - **Durations**: each chord gives exactly one of `seconds` (0.5–600), `beats` (0.5–1024, in the metre's beat unit) or `bars` (0.25–256). Beats and bars follow the tempo clock (see `tempo`), ramps included; a tempo change mid-chord stretches or shrinks what is left of it. Every change lands exactly when it is due, so a looping progression never drifts off the beat.
-- **`start_on`**: `"now"` (default), `"beat"` (next beat) or `"bar"` (next downbeat). While a plan waits, the state shows `harmony.starts_in`.
+- **`start_on`**: `"now"` (default), `"beat"` (next beat) or `"bar"` (next downbeat). Or **`at_bar`**: the downbeat of that bar (the state shows the current one in `tempo.bar`; a bar that has passed is refused). Give `harmony`, each `play_notes` and a `release` the same `at_bar` and they line up exactly, however far apart the calls are. While a plan waits, the state shows `harmony.starts_in`.
 - **`loop`** (default true). Without it, the last chord holds.
 - **`pedal`**: a note held in the bass under every chord (`A`, or `E1`…`E2` with an octave). Without it the bass voice (`drone_1`) follows each chord's root.
 - **`glide`**: seconds each voice takes to reach its next note (default 3); **`curve`** shapes it. With short chords, lower it so each chord arrives before the next.
@@ -115,14 +115,16 @@ The parameters (inside a part; as engine parameters they are `note_1/<path>`, so
 
 ### `play_notes` ✅
 
-Play a short phrase: to audition a patch, or to place a motif.
+Play a phrase: to audition a patch, or to place a motif or a line.
 
 ```json
-{ "part": 1, "steps": [ { "notes": "A3", "beats": 0.5 }, { "notes": "C4 E4", "beats": 0.5, "velocity": 0.6 }, { "notes": "rest", "beats": 1 } ], "repeat": 4, "start_on": "bar" }
+{ "part": 2, "phrase": "B3:0.5 D4 G4:1 | C#4:0.5 E4 A4:1 | A3+C#4+E4:2@0.6 r:1 F#5:1.5~ G5:0.5", "repeat": 4, "at_bar": 9 }
 ```
 
-- `notes`: a note (`A3`; C4 is middle C), a chord (`"A3 C4 E4"`), a MIDI number, or `"rest"`. `beats` in the current metre (default 1), `velocity` 0–1 (default 0.8), `gate` the fraction held (default 0.9; above 1 overlaps the next note, so a legato patch slides).
-- Follows the tempo map (ramps included) and starts on each note's exact sample. `start_on`: `now`, `beat`, `bar`. `repeat` up to 16. `{ "stop": true }` releases the part.
+- **`phrase`**, the short form: tokens separated by spaces. `A3:0.5` is a note and its length in beats (C4 is middle C; `1/2` and `3/4` also work); a missing length repeats the previous one (1 at the start). `A3+C#4+E4:2` is a chord; `r:1` (or `-:1`) a rest; `@0.6` sets that step's velocity; a trailing `~` holds the note into the next one (gate 1.05), so a legato patch slides. `|` bar lines are for the eye and are ignored. **`velocity`** (default 0.8) and **`gate`** (fraction held, default 0.9) set the defaults.
+- **`steps`**, the long form, one object per step: `notes` (a note, a chord as `"A3 C4 E4"`, a MIDI number, or `"rest"`), `beats`, `velocity`, `gate`.
+- Up to 1024 steps, `repeat` up to 64. Follows the tempo map (ramps included); each note starts on its exact sample. `start_on`: `now`, `beat`, `bar`, or `at_bar`.
+- Notes wait in the conductor's agenda and reach the audio thread about 200 ms before they are due. A new phrase adds to what is waiting; `{ "stop": true }` cancels what is waiting on that part and releases what sounds. The state shows, per part, `waiting` and `phrase_ends_in`.
 - Until the step sequencer arrives, this is how notes are played. The sequencer (arpeggios and ostinatos that follow the harmony) runs in the engine.
 
 ### `list_presets` ✅ / `save_preset` ✅
@@ -258,7 +260,7 @@ Freeze everything at its current position (cancel pending gestures without jumpi
 
 ### `get_state` ✅ Phase 1
 
-The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
+The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding, notes waiting and when the last one plays); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
 
 ### `listen`
 

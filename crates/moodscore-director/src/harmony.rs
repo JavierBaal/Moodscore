@@ -225,6 +225,8 @@ pub struct Chord {
     /// Readable name in the key: `F`, `Dm7`, `Gmaj7`.
     pub name: String,
     pub root: u8,
+    /// A bass note other than the root (`I/C#`): its pitch class.
+    pub bass: Option<u8>,
     /// Semitones above the root, root first: `[0, 3, 7]`.
     pub intervals: Vec<u8>,
     /// Note names of the chord tones, spelled by letter.
@@ -234,8 +236,30 @@ pub struct Chord {
 impl Chord {
     /// Parse a Roman-numeral chord in `key`. See the module docs for syntax.
     pub fn parse(symbol: &str, key: &Key) -> Result<Self, HarmonyError> {
-        let help = "write chords as Roman numerals: i, VI, bVII, iv7, Vsus4, ii°, IVmaj7, iadd9";
+        let help =
+            "write chords as Roman numerals: i, VI, bVII, iv7, Vsus4, ii°, IVmaj7, iadd9, I/C#";
         let s = symbol.trim();
+        // A slash names the bass note: I/C# is the tonic chord over C#.
+        if let Some((chord, bass)) = s.split_once('/') {
+            let note = parse_note(bass).map_err(|_| {
+                HarmonyError(format!(
+                    "'{symbol}': after the slash give the bass note by name (I/C#, IVmaj7/A); \
+                     for a secondary dominant write the chord itself (II for V/V)"
+                ))
+            })?;
+            if note.midi.is_some() {
+                return err(format!(
+                    "'{symbol}': give the bass note without an octave (I/C#)"
+                ));
+            }
+            let mut c = Chord::parse(chord, key)?;
+            if note.pitch_class != c.root {
+                c.bass = Some(note.pitch_class);
+                c.symbol = s.to_string();
+                c.name = format!("{}/{}", c.name, key.name(note.pitch_class));
+            }
+            return Ok(c);
+        }
         let mut rest = s;
 
         let mut accidental: i32 = 0;
@@ -361,6 +385,7 @@ impl Chord {
             symbol: s.to_string(),
             name,
             root,
+            bass: None,
             intervals,
             spelled,
         })
@@ -418,17 +443,19 @@ pub struct Voicing {
 
 /// Voice `chord` for a bass voice (if `bass_from` is given) and the upper
 /// voices currently at `upper_from` (MIDI notes), moving as little as
-/// possible. `pedal` replaces the chord root in the bass.
+/// possible. `pedal` replaces the chord root in the bass; a chord's own
+/// bass note (`I/C#`) wins over the pedal, since it was asked for that chord.
 pub fn voice(
     chord: &Chord,
     pedal: Option<Note>,
     bass_from: Option<f32>,
     upper_from: &[f32],
 ) -> Voicing {
-    let bass = bass_from.map(|from| match pedal {
-        Some(Note { midi: Some(m), .. }) => m as f32,
-        Some(Note { pitch_class, .. }) => nearest(pitch_class, from, BASS_RANGE),
-        None => nearest(chord.root, from, BASS_RANGE),
+    let bass = bass_from.map(|from| match (chord.bass, pedal) {
+        (Some(pc), _) => nearest(pc, from, BASS_RANGE),
+        (None, Some(Note { midi: Some(m), .. })) => m as f32,
+        (None, Some(Note { pitch_class, .. })) => nearest(pitch_class, from, BASS_RANGE),
+        (None, None) => nearest(chord.root, from, BASS_RANGE),
     });
 
     let upper = assign(chord, upper_from);
@@ -638,6 +665,33 @@ mod tests {
             moved <= 4.0,
             "upper voices moved {moved} semitones in total"
         );
+    }
+
+    #[test]
+    fn slash_chords_put_their_note_in_the_bass() {
+        let d = Key::new("D", "ionian").unwrap();
+        let c = Chord::parse("I/C#", &d).unwrap();
+        assert_eq!((c.root, c.bass, c.name.as_str()), (2, Some(1), "D/C#"));
+        let c = Chord::parse("IVmaj7/A", &d).unwrap();
+        assert_eq!((c.bass, c.name.as_str()), (Some(9), "Gmaj7/A"));
+        // Over its own root it is just the chord.
+        assert_eq!(Chord::parse("I/D", &d).unwrap().bass, None);
+        let e = Chord::parse("V/V", &d).unwrap_err().to_string();
+        assert!(e.contains("secondary"), "{e}");
+        assert!(Chord::parse("I/C#2", &d).is_err());
+
+        // The bass voice goes to C#, even over a pedal; the upper voices
+        // keep the chord.
+        let v = voice(
+            &Chord::parse("I/C#", &d).unwrap(),
+            parse_note("D1").ok(),
+            Some(38.0),
+            &[50.0, 54.0, 57.0],
+        );
+        assert_eq!(v.bass.map(|b| b as i32 % 12), Some(1));
+        assert!((v.bass.unwrap() - 37.0).abs() < 0.01, "nearest C# to D2");
+        let pcs: Vec<i32> = v.upper.iter().map(|m| *m as i32 % 12).collect();
+        assert!(pcs.iter().all(|pc| [2, 6, 9].contains(pc)), "{pcs:?}");
     }
 
     #[test]

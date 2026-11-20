@@ -221,6 +221,12 @@ impl TempoMap {
         }
     }
 
+    /// When bar `n` begins (bar 1 is the first downbeat; numbering restarts
+    /// with a new metre or `downbeat`). Later tempo changes can move it.
+    pub fn time_of_bar(&self, n: i64) -> f64 {
+        self.time_at(self.bar_origin + (n - 1) as f64 * self.meter.quarters_per_bar())
+    }
+
     /// The first downbeat at or after `t`.
     pub fn next_bar(&self, t: f64) -> f64 {
         self.next_multiple(t, self.meter.quarters_per_bar())
@@ -384,6 +390,15 @@ mod tests {
         let c = b.changed(9.0, Some(150.0), None, 4.0, Curve::Linear, false);
         assert!(close(c.bpm_at(9.0), mid, 1e-9));
         assert!(close(c.beat_at(9.0), b.beat_at(9.0), 1e-12));
+    }
+
+    #[test]
+    fn bars_by_number() {
+        let m = TempoMap::default().changed(5.0, Some(60.0), None, 0.0, Curve::Linear, true);
+        // 60 BPM 4/4 from 5 s: bar 3 starts 8 s later.
+        assert!(close(m.time_of_bar(1), 5.0, 1e-12));
+        assert!(close(m.time_of_bar(3), 13.0, 1e-12));
+        assert_eq!(m.position(m.time_of_bar(7)).bar, 7);
     }
 
     #[test]
