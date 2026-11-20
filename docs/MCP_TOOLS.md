@@ -262,26 +262,29 @@ Freeze everything at its current position (cancel pending gestures without jumpi
 
 The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding, notes waiting and when the last one plays); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
 
-### `listen`
+### `audition` ✅
 
-A short perceptual report of the actual output over a window.
-
-```json
-{ "window": 5 }
-```
-
-Returns, for example:
+Claude's ears for its own sounds: render a note part's current sound playing a phrase, offline (nothing sounds), and measure it.
 
 ```json
-{
-  "loudness_lufs": -21.4,
-  "brightness": 0.32,
-  "density": 0.55,
-  "movement": 0.18,
-  "dominant_pitch": "D2",
-  "notes": "low-mid heavy, slow beating between drones 1 and 3"
-}
+{ "part": 1, "phrase": "A#1:4~ F2:4", "target": "deep_moog_bass" }
 ```
+
+- `phrase` in the short form of `play_notes` (default: the target's phrase, else `"A3:2"`); `bpm` (default: the target's, else the current tempo); `room: true` adds the shared reverb and master, with the drones silent.
+- Returns `summary` (the sound in words), `level`, `spectrum` (centroid, energy per band, tilt in dB/octave, noisiness), `stereo` (correlation and balance below 150 Hz, 150 Hz–3 kHz and 3–12 kHz), `over_time` (brightness and level in eight stretches), and per note: attack, change in level over the note, brightness at 10/50/90 %, harmonics 2–8 against the fundamental (single notes), tuning, wobble and glide time. `metrics` has the headline numbers, flat.
+- With `target`, `comparison` lists each criterion: value, target, tolerance, and "on target" or how far above or below.
+
+### `listen` ✅
+
+The same measurements on the last `seconds` (1–30, default 5) of the live output: the whole mix as it sounds. Without notes to go by, the pitch heard is tracked instead (`pitch`: held notes, glides, wobble, the longest note's harmonics; `pitch_range` sets where to look). `target` compares.
+
+### `analyze_file` ✅
+
+The same measurements on a reference WAV the person put in the references folder (`MOODSCORE_REFERENCES`; else `referencias/` at the root of the checkout the binary was built in, kept out of git; else the platform's data folder). `file` is a name inside that folder, never a path. `from`/`to` pick a stretch (at most 60 s), measured as one event; `band` ([low, high] Hz) singles out an instrument in a mix; `pitch_range` says where to look for its pitch. In a full mix, harmonic levels and glides are approximate. The same analysis is on the command line: `moodscore analyze FILE.wav [--from S] [--to S] [--band LO HI] [--pitch LO HI] [--target FILE]`.
+
+### Targets
+
+Target sounds are data in `presets/targets/` (numbers only, no audio): a name, a description, the `phrase` and `bpm` to audition with, and `criteria` (`metric: [value, tolerance]`). `list_presets` lists them. The first four were measured from reference tracks: `deep_moog_bass`, `swell_horn`, `glide_arp`, `deep_pad`.
 
 ### `list_parameters`
 

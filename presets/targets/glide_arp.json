@@ -1,0 +1,11 @@
+{
+  "name": "glide_arp",
+  "description": "A soft legato arpeggio: two notes a fourth apart in eighth-note triplets, sliding into each other. Measured from a melodic-techno reference track (numbers only): a warm, round tone around 900 Hz, slides of about a tenth of a second, very wide. The slide time comes from a full mix and is approximate.",
+  "bpm": 128,
+  "phrase": "F4:1/3~ A#4~ F4~ A#4~ F4~ A#4~ F4~ A#4~ F4~ A#4~ F4~ A#4",
+  "criteria": {
+    "centroid_hz": [900, 150],
+    "glide_ms": [100, 40],
+    "mid_correlation": [0.18, 0.12]
+  }
+}

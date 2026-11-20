@@ -47,6 +47,10 @@ The note voices' synth, in Rust (Faust's per-block parameters can't start a note
 
 A patch is a flat table of numbers (`params.rs`), so the engine smooths it like any other parameter and presets are plain `path → value` files (`presets/`).
 
+### moodscore-ear
+
+Claude's ears: measures audio the way a sound designer listens. Level; spectral centroid over time, tilt, noisiness, energy per band; harmonics against the fundamental (FFT, padded so a harmonic between bins loses < 0.1 dB); envelope (attack, change over a note); pitch with YIN (difference function by FFT) read as held notes, wobble and glides; stereo correlation and balance per band. Works on a part rendered offline (`moodscore_engine::render_part_offline`, a fresh part and optionally a fresh copy of the room, nothing touches the live engine), on the live output (the audio thread hands each chunk to a lock-free queue; the conductor keeps the last 30 s), or on a WAV. Targets compare the headline metrics with tolerances.
+
 ### moodscore-engine
 
 Owns the audio callback, the Faust DSP and the two note parts. Its parameters are Faust's followed by `note_1/…` and `note_2/…`. Targets cross from the control thread as one atomic per parameter (last value wins, which is exactly right for targets); counts and choices (`Scale::Discrete`) are taken as they are, never smoothed. Notes cross through a lock-free queue (`rtrb`), each stamped with its frame; the audio thread keeps them in a preallocated list until due. The conductor holds longer phrases in its own agenda, fixed to frames when scheduled (so a phrase keeps its timing) and handed over about 200 ms before each note, so the audio thread only ever holds a few and a stop can still cancel the rest. Every 32 frames the audio thread:

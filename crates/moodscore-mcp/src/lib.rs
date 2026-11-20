@@ -3,12 +3,13 @@
 //! The tools an AI agent uses to play Moodscore, as described in
 //! `docs/MCP_TOOLS.md`: `start` and `release` (the transport), `morph`
 //! (the mood macros), `gesture`, `harmony`, `tempo`, `set_pace`, the note
-//! parts (`patch`, `play_notes`, `list_presets`, `save_preset`) and
-//! `get_state`.
+//! parts (`patch`, `play_notes`, `list_presets`, `save_preset`), the ears
+//! (`audition`, `listen`, `analyze_file`) and `get_state`.
 //!
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
 
+mod ears;
 mod notes;
 
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,15 @@ limit worth worrying about. When a sound is right, `save_preset` keeps it. \
 Notes share the drones' room. Describe sounds to the person in musical \
 words; move part/expression (with gesture on note_N/part/expression) to \
 open or shape a sound while it plays, if the preset routes it.
+- You can't hear, so measure: `audition` renders a part's current sound \
+playing a phrase, offline (nothing sounds), and reports its brightness, \
+harmonics, attack, how it changes over each note, glides, pitch steadiness \
+and stereo width, in numbers and words. With a target (list_presets lists \
+them) it says what is on target and how far off the rest is. Shape a sound \
+by auditioning, adjusting with patch, and auditioning again; then let the \
+person judge by ear. `listen` measures the last seconds of the live output \
+(the whole mix). `analyze_file` measures a reference WAV the person has put \
+in their references folder.
 - Call `get_state` to see what is moving, how long it has left, and how loud \
 the output is.
 - Talk to the person in musical, sensory terms. Don't recite numbers unless \
@@ -255,6 +265,46 @@ pub struct PlayNotesArgs {
 
 /// The preset each part last loaded (name and patch), if any.
 type Loaded = [Option<(String, Patch)>; PARTS];
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AuditionArgs {
+    /// Which note part's current sound: 1 or 2. Default 1.
+    pub part: Option<serde_json::Value>,
+    /// What to play, in the short phrase form ("A3:2", "A#1:4~ F2:4", "A3+C4+E4:8"). Default: the target's phrase, else "A3:2".
+    pub phrase: Option<String>,
+    /// Tempo for the phrase. Default: the target's, else the current tempo.
+    pub bpm: Option<f64>,
+    /// Through the shared room (the reverb and master) as well, with the drones silent. Default false: the part alone.
+    pub room: Option<bool>,
+    /// Compare with a target (list_presets lists them), e.g. "deep_moog_bass".
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListenArgs {
+    /// Seconds of the live output to measure, 1 to 30. Default 5.
+    pub seconds: Option<f64>,
+    /// [low, high] Hz to look for a pitch in. Default [30, 2000].
+    pub pitch_range: Option<(f32, f32)>,
+    /// Compare with a target.
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AnalyzeFileArgs {
+    /// A WAV file in the references folder, by name (e.g. "theme.wav").
+    pub file: String,
+    /// Start, in seconds. Default 0.
+    pub from: Option<f64>,
+    /// End, in seconds (at most 60 s after from). Default the end of the file.
+    pub to: Option<f64>,
+    /// Keep only [low, high] Hz, to single out one instrument in a mix (e.g. [30, 250] for a bass).
+    pub band: Option<(f32, f32)>,
+    /// [low, high] Hz to look for a pitch in, e.g. [40, 200] for a bass. Default [30, 2000].
+    pub pitch_range: Option<(f32, f32)>,
+    /// Compare with a target.
+    pub target: Option<String>,
+}
 
 const MAX_STEPS: usize = 1024;
 const MAX_REPEAT: u32 = 64;
@@ -637,7 +687,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "List the note presets: the built-in ones and those saved with save_preset, each with what it sounds like."
+        description = "List the note presets (built in and saved with save_preset, each with what it sounds like), the target sounds audition can compare with (each with the phrase and tempo it was measured at, and its criteria), and the folder analyze_file reads reference WAVs from."
     )]
     fn list_presets(&self, Parameters(_): Parameters<ListPresetsArgs>) -> String {
         let list: Vec<serde_json::Value> = notes::all_presets()
@@ -650,7 +700,102 @@ impl MoodscoreServer {
                 })
             })
             .collect();
-        serde_json::to_string_pretty(&serde_json::json!({ "presets": list })).unwrap_or_default()
+        let targets: Vec<serde_json::Value> = moodscore_ear::Target::factory()
+            .into_iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "phrase": t.phrase,
+                    "bpm": t.bpm,
+                    "criteria": t.criteria,
+                })
+            })
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({
+            "presets": list,
+            "targets": targets,
+            "references_folder": ears::references_dir().map(|d| d.display().to_string()),
+        }))
+        .unwrap_or_default()
+    }
+
+    #[tool(
+        description = "Hear a note part's current sound without playing it: renders a phrase offline (nothing sounds) and measures it. Reports level; brightness (spectral centroid), tilt and noisiness; each note's attack, change in level, brightness at its start, middle and end, harmonics 2 to 8 against the fundamental, tuning, wobble and glide time; and stereo correlation and balance in the lows, mids and highs; plus a summary in words. With target, compares with a target sound (list_presets lists them, with the phrase and tempo they were measured with) and says what is on target and how far off the rest is. Use it in a loop with patch: audition, adjust, audition again. room: true adds the shared reverb."
+    )]
+    fn audition(&self, Parameters(args): Parameters<AuditionArgs>) -> Result<String, String> {
+        let part = notes::part_index(args.part.as_ref())?;
+        let target = args
+            .target
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(moodscore_ear::Target::find)
+            .transpose()?;
+        let (report, phrase, bpm) = ears::audition(
+            &self.conductor,
+            ears::AuditionRequest {
+                part,
+                phrase: args.phrase.filter(|p| !p.trim().is_empty()),
+                bpm: args.bpm,
+                room: args.room.unwrap_or(false),
+                target,
+            },
+        )?;
+        let mut value = moodscore_ear::to_json(&report);
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "played".into(),
+                serde_json::json!({
+                    "part": moodscore_engine::part_prefix(part),
+                    "phrase": phrase,
+                    "bpm": (bpm * 10.0).round() / 10.0,
+                }),
+            );
+        }
+        Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something."
+    )]
+    fn listen(&self, Parameters(args): Parameters<ListenArgs>) -> Result<String, String> {
+        let seconds = args.seconds.unwrap_or(5.0);
+        if !(1.0..=moodscore_director::HEARD_SECONDS as f64).contains(&seconds) {
+            return Err(format!(
+                "seconds must be between 1 and {}",
+                moodscore_director::HEARD_SECONDS
+            ));
+        }
+        let target = args
+            .target
+            .as_deref()
+            .map(moodscore_ear::Target::find)
+            .transpose()?;
+        let report = ears::listen(&self.conductor, seconds, args.pitch_range, target.as_ref())?;
+        Ok(serde_json::to_string_pretty(&moodscore_ear::to_json(&report)).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Measure a reference recording: a WAV the person put in the references folder (list_presets shows where). Measures the stretch from..to (at most 60 s) as one event: level, brightness and how it moves, tilt, attack and change in level, stereo per band, the pitch heard (held notes, glides, the longest note's harmonics). To single out one instrument in a mix, pick a stretch where it plays alone or leads, and use band (e.g. [30, 250] for a bass) and pitch_range. Use the numbers as a target to shape a sound towards with audition. In a full mix, harmonic levels and glides are approximate."
+    )]
+    fn analyze_file(
+        &self,
+        Parameters(args): Parameters<AnalyzeFileArgs>,
+    ) -> Result<String, String> {
+        let target = args
+            .target
+            .as_deref()
+            .map(moodscore_ear::Target::find)
+            .transpose()?;
+        let report = ears::analyze_file(ears::FileRequest {
+            file: args.file,
+            from: args.from,
+            to: args.to,
+            band: args.band,
+            pitch_range: args.pitch_range,
+            target,
+        })?;
+        Ok(serde_json::to_string_pretty(&moodscore_ear::to_json(&report)).unwrap_or_default())
     }
 
     #[tool(

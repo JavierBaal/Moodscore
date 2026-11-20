@@ -15,9 +15,21 @@ import time
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/release/moodscore"
 
 PRESETS = tempfile.mkdtemp(prefix="moodscore-presets-")
+REFS = tempfile.mkdtemp(prefix="moodscore-refs-")
+# A reference WAV: an A2 sawtooth-ish tone, 2 s, 44.1 kHz stereo 16-bit.
+import math, struct, wave
+with wave.open(os.path.join(REFS, "tone.wav"), "wb") as w:
+    w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+    frames = bytearray()
+    for i in range(88200):
+        t = i / 44100
+        v = sum(math.sin(2 * math.pi * 110 * k * t) / k for k in range(1, 12)) * 0.3
+        s16 = int(max(-1, min(1, v)) * 32767)
+        frames += struct.pack("<hh", s16, s16)
+    w.writeframes(bytes(frames))
 proc = subprocess.Popen(
     [BIN, "serve", "--no-audio"],
-    env={**os.environ, "MOODSCORE_PRESETS": PRESETS},
+    env={**os.environ, "MOODSCORE_PRESETS": PRESETS, "MOODSCORE_REFERENCES": REFS},
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -77,7 +89,7 @@ tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
     tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state",
-             "patch", "play_notes", "list_presets", "save_preset"},
+             "patch", "play_notes", "list_presets", "save_preset", "audition", "listen", "analyze_file"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -287,6 +299,30 @@ check(not err and f and f["starts_in"] > 4, f"release waits for its bar ({f})")
 call("start", {"over": 0.5})
 err, text = call("harmony", {"key": "D", "progression": [{"chord": "V/V", "beats": 2}]})
 check(err and "secondary" in text, f"V/V explained: {text[:80]}")
+
+# Ears.
+err, text = call("list_presets", {})
+r = json.loads(text) if not err else {}
+check(not err and "deep_moog_bass" in [t["name"] for t in r.get("targets", [])] and r.get("references_folder") == REFS,
+      "targets and the references folder are listed")
+call("patch", {"part": 1, "preset": "pluck"})
+err, text = call("audition", {"part": 1, "phrase": "A3:1 C4 E4:2", "target": "glide_arp"})
+r = json.loads(text) if not err else {}
+check(not err and len(r.get("notes", [])) == 3 and r["comparison"]["of"] == 3 and r["played"]["phrase"].startswith("A3")
+      and "centroid_hz" in r["metrics"], f"audition measures each note and compares ({text[:120]})")
+err, text = call("audition", {"part": 1, "phrase": "A3:1", "room": True})
+check(not err and json.loads(text)["seconds"] > 2.5, "audition through the room rings on")
+time.sleep(1.2)
+err, text = call("listen", {"seconds": 1})
+check(not err and "summary" in json.loads(text), f"listen measures the live output ({text[:80]})")
+err, text = call("analyze_file", {"file": "tone.wav", "pitch_range": [60, 200]})
+r = json.loads(text) if not err else {}
+check(not err and r.get("pitch", {}).get("longest", "").startswith("A2") and abs(r["metrics"]["harmonic_2_db"] + 6) < 1.5,
+      f"analyze_file hears an A2 saw ({text[:160] if err else r.get('pitch')})")
+err, text = call("analyze_file", {"file": "../tone.wav"})
+check(err and "not a path" in text, "analyze_file stays in its folder")
+err, text = call("audition", {"target": "nope"})
+check(err and "deep_moog_bass" in text, "unknown target explained")
 call("harmony", {"stop": True})
 
 err, text = call("release", {"over": 1, "start_in": 30})

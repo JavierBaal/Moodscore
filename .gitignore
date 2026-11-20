@@ -7,6 +7,9 @@
 *.wav
 *.flac
 /scenes/local/
+# Reference audio for analyze_file (never committed)
+/referencias/
+/references/
 
 # Editors and OS
 .vscode/

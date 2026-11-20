@@ -1101,7 +1101,12 @@ pub struct Conductor {
     /// are less than [`NOTE_LOOKAHEAD`] away, so the audio thread only ever
     /// holds a few, and a stop can still cancel the rest.
     agenda: Arc<Mutex<Vec<NoteMsg>>>,
+    /// The last [`HEARD_SECONDS`] of output, interleaved stereo, for `listen`.
+    heard: Arc<Mutex<std::collections::VecDeque<f32>>>,
 }
+
+/// Seconds of output kept for listening back.
+pub const HEARD_SECONDS: usize = 30;
 
 /// How far ahead notes are handed to the engine.
 const NOTE_LOOKAHEAD: f64 = 0.2;
@@ -1124,18 +1129,30 @@ impl Conductor {
             running: Arc::new(AtomicBool::new(true)),
             pending_fade: Arc::new(Mutex::new(None)),
             agenda: Arc::new(Mutex::new(Vec::new())),
+            heard: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         let loop_c = c.clone();
+        let capture = c.engine.take_capture();
         thread::Builder::new()
             .name("moodscore-director".into())
-            .spawn(move || loop_c.run())
+            .spawn(move || loop_c.run(capture))
             .expect("failed to start the director thread");
         c
     }
 
-    fn run(&self) {
+    fn run(&self, mut capture: Option<rtrb::Consumer<f32>>) {
         let period = Duration::from_secs_f64(1.0 / CONTROL_RATE_HZ as f64);
+        let keep = HEARD_SECONDS * self.engine.sample_rate() as usize * 2;
         while self.running.load(Ordering::Relaxed) {
+            if let Some(cap) = &mut capture {
+                let mut heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+                while let Ok(s) = cap.pop() {
+                    heard.push_back(s);
+                }
+                let extra = heard.len().saturating_sub(keep);
+                // Whole frames only, so left and right stay paired.
+                heard.drain(..extra - extra % 2);
+            }
             let now = self.now();
             {
                 let mut d = self.lock();
@@ -1289,6 +1306,26 @@ impl Conductor {
         drop(agenda);
         self.feed_notes();
         Ok(())
+    }
+
+    /// The last `seconds` of output (at most [`HEARD_SECONDS`]), as left and
+    /// right, at the engine's sample rate. Empty if nothing has been heard.
+    pub fn recent_output(&self, seconds: f64) -> (Vec<f32>, Vec<f32>) {
+        let heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+        let want = (seconds.max(0.0) * self.engine.sample_rate() as f64) as usize * 2;
+        let skip = heard.len().saturating_sub(want);
+        let skip = skip - skip % 2;
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        for (i, s) in heard.iter().skip(skip).enumerate() {
+            if i % 2 == 0 {
+                l.push(*s);
+            } else {
+                r.push(*s);
+            }
+        }
+        r.truncate(l.len());
+        l.truncate(r.len());
+        (l, r)
     }
 
     /// Cancel every note still waiting for `part` and release what sounds.

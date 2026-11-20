@@ -33,6 +33,9 @@ pub const PARTS: usize = 2;
 /// Notes that can wait in the queue for the audio thread.
 const NOTE_QUEUE: usize = 1024;
 
+/// Seconds of output the capture queue holds before a reader must drain it.
+const CAPTURE_SECONDS: usize = 2;
+
 /// A note event for a part, due at an absolute frame.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct NoteMsg {
@@ -131,6 +134,8 @@ pub struct EngineHandle {
     notes: Arc<Mutex<rtrb::Producer<NoteMsg>>>,
     /// Id of each part's first parameter.
     part_base: [usize; PARTS],
+    /// The output, as rendered (interleaved stereo), for whoever listens.
+    capture: Arc<Mutex<Option<rtrb::Consumer<f32>>>>,
 }
 
 impl EngineHandle {
@@ -227,6 +232,22 @@ impl EngineHandle {
             .map_or(0, |v| v.load(Ordering::Relaxed) as usize)
     }
 
+    /// Number of parameters that belong to the Faust DSP (drones and room);
+    /// the note parts' follow.
+    pub fn dsp_param_count(&self) -> usize {
+        self.part_base[0]
+    }
+
+    /// Take the stream of rendered output (interleaved stereo). Only one
+    /// reader can have it; later calls get `None`. Whoever takes it should
+    /// drain it often: when it is full, new audio is dropped.
+    pub fn take_capture(&self) -> Option<rtrb::Consumer<f32>> {
+        self.capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
     /// The id of a part's parameter, by its path inside the part (`"filter/cutoff"`).
     pub fn part_param_id(&self, part: usize, path: &str) -> Option<usize> {
         let local = synth_params::find(path)?;
@@ -244,6 +265,7 @@ pub struct Renderer {
     /// Notes received but not yet due. Preallocated; never grows.
     pending: Vec<NoteMsg>,
     frame: u64,
+    capture: rtrb::Producer<f32>,
     note_buf: [[f32; CHUNK]; 4],
     shared: Arc<Shared>,
     /// Current (smoothed) value of each parameter, in the smoothing domain:
@@ -291,6 +313,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
     }
     let params: Arc<[ParamInfo]> = all.into();
     let (producer, consumer) = rtrb::RingBuffer::new(NOTE_QUEUE);
+    let (cap_tx, cap_rx) = rtrb::RingBuffer::new(CAPTURE_SECONDS * sample_rate as usize * 2);
 
     let targets: Box<[AtomicU32]> = params
         .iter()
@@ -327,6 +350,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         notes: consumer,
         pending: Vec::with_capacity(NOTE_QUEUE),
         frame: 0,
+        capture: cap_tx,
         note_buf: [[0.0; CHUNK]; 4],
         shared: shared.clone(),
         current,
@@ -348,6 +372,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         sample_rate,
         notes: Arc::new(Mutex::new(producer)),
         part_base,
+        capture: Arc::new(Mutex::new(Some(cap_rx))),
     };
     (handle, renderer)
 }
@@ -428,6 +453,14 @@ impl Renderer {
         self.rms_sq += (mean_sq - self.rms_sq) * self.rms_coef;
 
         Shared::store_f32(&self.shared.fade_current, self.fade);
+        // Hand the output to whoever listens; whole chunks only, so left and
+        // right never slip.
+        if self.capture.slots() >= 2 * n {
+            for i in 0..n {
+                let _ = self.capture.push(self.left[i]);
+                let _ = self.capture.push(self.right[i]);
+            }
+        }
         // Exact digital silence (released, or not started) reads as silence
         // at once rather than as a falling peak.
         self.peak_hold = if peak == 0.0 {
@@ -514,6 +547,84 @@ impl Renderer {
         }
         self.primed = true;
     }
+}
+
+/// Render a note part offline, without touching the live engine: a fresh
+/// part with `patch` plays `events` (frame, event) for `frames` frames at
+/// `quarters_per_second`. With `room` (the Faust parameter values, in order),
+/// the notes go through the drones' room too (the caller silences the drones
+/// it doesn't want). Allocates; never call it on the audio thread.
+pub fn render_part_offline(
+    sample_rate: u32,
+    patch: &[f32],
+    room: Option<&[f32]>,
+    events: &[(u64, NoteEvent)],
+    frames: usize,
+    quarters_per_second: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    const SPAN: usize = 256;
+    let mut part = Part::new(sample_rate, 0xa0d1);
+    part.set_patch(patch);
+    part.set_tempo(quarters_per_second);
+    let mut dsp = room.map(|values| {
+        let mut d = Dsp::new(sample_rate);
+        for (id, v) in values.iter().enumerate() {
+            d.set(id, *v);
+        }
+        // Let the DSP's own smoothing settle on these values first.
+        let (mut l, mut r) = (vec![0.0; SPAN], vec![0.0; SPAN]);
+        for _ in 0..(sample_rate as usize / SPAN) {
+            d.compute(&mut l, &mut r);
+        }
+        d
+    });
+    let mut events: Vec<(u64, NoteEvent)> = events.to_vec();
+    events.sort_by_key(|e| e.0);
+    let (mut out_l, mut out_r) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+    let mut buf = [[0.0f32; SPAN]; 4];
+    let (mut l, mut r) = ([0.0f32; SPAN], [0.0f32; SPAN]);
+    let mut next = 0;
+    let mut at = 0u64;
+    while (at as usize) < frames {
+        let n = SPAN.min(frames - at as usize);
+        let end = at + n as u64;
+        let mut due = Vec::new();
+        while next < events.len() && events[next].0 < end {
+            due.push(((events[next].0.saturating_sub(at)) as usize, events[next].1));
+            next += 1;
+        }
+        for b in &mut buf {
+            b[..n].fill(0.0);
+        }
+        let [dl, dr, sl, sr] = &mut buf;
+        part.render_bus(
+            &due,
+            Bus {
+                dry_l: &mut dl[..n],
+                dry_r: &mut dr[..n],
+                send_l: &mut sl[..n],
+                send_r: &mut sr[..n],
+            },
+        );
+        match &mut dsp {
+            Some(d) => {
+                let [a, b, c, e] = &buf;
+                d.compute_with(
+                    [&a[..n], &b[..n], &c[..n], &e[..n]],
+                    &mut l[..n],
+                    &mut r[..n],
+                );
+                out_l.extend_from_slice(&l[..n]);
+                out_r.extend_from_slice(&r[..n]);
+            }
+            None => {
+                out_l.extend_from_slice(&buf[0][..n]);
+                out_r.extend_from_slice(&buf[1][..n]);
+            }
+        }
+        at = end;
+    }
+    (out_l, out_r)
 }
 
 #[cfg(test)]
@@ -774,6 +885,63 @@ mod tests {
             "engine with 8 heavy notes: {:.1}% of one core",
             share * 100.0
         );
+    }
+
+    #[test]
+    fn offline_renders_match_the_part() {
+        let preset = &moodscore_synth::Preset::factory()[0];
+        let on = NoteEvent::NoteOn {
+            note: 57,
+            velocity: 0.8,
+        };
+        let (l, r) = render_part_offline(SR, &preset.patch.0, None, &[(4800, on)], 48_000, 2.0);
+        assert_eq!(l.len(), 48_000);
+        assert!(l[..4800].iter().all(|s| *s == 0.0));
+        assert!(l[4800..].iter().any(|s| s.abs() > 0.01) && r.iter().any(|s| s.abs() > 0.01));
+        // Through the room: the reverb adds a tail after the note.
+        let (h, _) = new(SR);
+        let mut room: Vec<f32> = h.params()[..h.dsp_param_count()]
+            .iter()
+            .map(|p| p.init)
+            .collect();
+        for (id, p) in h.params()[..h.dsp_param_count()].iter().enumerate() {
+            if p.path.ends_with("/level") && p.path.starts_with("drone_") {
+                room[id] = 0.0;
+            }
+        }
+        let off = NoteEvent::NoteOff { note: 57 };
+        let mut short = moodscore_synth::Patch::default();
+        short.set(moodscore_synth::P::AmpRelease, 0.05);
+        short.set(moodscore_synth::P::ReverbSend, 0.6);
+        let dry = render_part_offline(SR, &short.0, None, &[(0, on), (4800, off)], 96_000, 2.0);
+        let wet = render_part_offline(
+            SR,
+            &short.0,
+            Some(&room),
+            &[(0, on), (4800, off)],
+            96_000,
+            2.0,
+        );
+        let tail = |x: &[f32]| x[72_000..].iter().map(|s| s * s).sum::<f32>();
+        assert!(
+            tail(&wet.0) > 10.0 * tail(&dry.0) + 1e-9,
+            "the room rings on"
+        );
+    }
+
+    #[test]
+    fn the_output_can_be_listened_to() {
+        let (h, mut r) = new(SR);
+        h.fade_to(1.0, 0.05);
+        let mut cap = h.take_capture().expect("first reader gets it");
+        assert!(h.take_capture().is_none());
+        run(&mut r, 0.5);
+        let mut got = Vec::new();
+        while let Ok(s) = cap.pop() {
+            got.push(s);
+        }
+        assert_eq!(got.len(), 2 * (SR as usize / 2));
+        assert!(got.iter().any(|s| s.abs() > 1e-3));
     }
 
     #[test]

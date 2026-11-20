@@ -1,0 +1,12 @@
+{
+  "name": "deep_pad",
+  "description": "A wide, slow pad that holds. The width is measured from a melodic-techno reference track (numbers only); the slow attack and the sustain are design choices.",
+  "bpm": 128,
+  "phrase": "F3+A#3+C#4+F4:16@0.7",
+  "criteria": {
+    "attack_ms": [700, 400],
+    "change_db": [-3, 3],
+    "mid_correlation": [0.2, 0.12],
+    "high_correlation": [0.12, 0.15]
+  }
+}

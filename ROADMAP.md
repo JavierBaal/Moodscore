@@ -29,7 +29,7 @@ The milestone that decides whether the idea works:
 
 1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free, ready to be read from the audio thread by the step sequencer.
 2. ✅ The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
-3. Audition: Claude's ears (render, analyse, describe).
+3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. Next in the same block: the sound quality pass (ladder filter, analog drift, ensemble width) and four presets tuned against the targets.
 4. Step sequencer: arpeggios and ostinatos played by the note voices.
 5. Chained sections: a cue list the engine runs on its own.
 6. `density` and `distance` macros.

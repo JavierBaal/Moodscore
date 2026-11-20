@@ -11,6 +11,7 @@ rust-version.workspace = true
 moodscore-director.workspace = true
 moodscore-engine.workspace = true
 moodscore-synth.workspace = true
+moodscore-ear.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

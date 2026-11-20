@@ -1,0 +1,15 @@
+{
+  "name": "swell_horn",
+  "description": "Melancholic synth horns: a chord that opens while it fades. Measured from a melodic-techno reference track (numbers only), a two-bar chord at 128 BPM: a gentle attack, the level falling about 20 dB while the brightness climbs from about 500 Hz to about 1.5 kHz, very wide.",
+  "bpm": 128,
+  "phrase": "A#3+C#4+F4:8@0.8",
+  "criteria": {
+    "attack_ms": [220, 120],
+    "change_db": [-20, 4],
+    "brightness_start_hz": [490, 150],
+    "brightness_mid_hz": [770, 220],
+    "brightness_end_hz": [1470, 400],
+    "tilt_db_per_octave": [-7, 3],
+    "mid_correlation": [0.2, 0.15]
+  }
+}

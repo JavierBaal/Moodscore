@@ -4,7 +4,7 @@
 
 Tell it how the scene should feel. It moves the sound there.
 
-> **Status: Phase 2 in progress.** You can play it live from Claude (or any MCP client): six drone voices that walk chord progressions in any mode with smooth voice leading, a musical clock (tempo, metre, accelerando and ritardando) with chords in bars, two note parts with a synth Claude shapes (plucks, leads, presets as data), two mood macros (`darkness`, `instability`), a standing pace for transitions, delayed fades, smooth gestures with no clicks or jumps. Claude's ears (audition), arpeggios and ostinatos, more macros and the cinematic pulse are coming in Phase 2. Star or watch the repo to follow progress, or open an issue to help shape it.
+> **Status: Phase 2 in progress.** You can play it live from Claude (or any MCP client): six drone voices that walk chord progressions in any mode with smooth voice leading, a musical clock (tempo, metre, accelerando and ritardando) with chords in bars, two note parts with a synth Claude shapes (plucks, leads, presets as data) and measures with its own ears, two mood macros (`darkness`, `instability`), a standing pace for transitions, delayed fades, smooth gestures with no clicks or jumps. a richer analog sound, arpeggios and ostinatos, more macros and the cinematic pulse are coming in Phase 2. Star or watch the repo to follow progress, or open an issue to help shape it.
 
 ---
 

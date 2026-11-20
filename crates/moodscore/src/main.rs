@@ -5,6 +5,8 @@
 //! moodscore play [SECONDS] [--macros FILE]        live demo without MCP (check your audio)
 //! moodscore render OUT.wav [SECONDS] [--macros FILE]  offline demo to a WAV file
 //! moodscore params                                list the DSP parameters
+//! moodscore analyze FILE.wav [--from S] [--to S] [--band LO HI] [--pitch LO HI] [--target FILE]
+//!                                                 measure a sound (JSON report)
 //! ```
 //!
 //! In `serve` mode stdout carries the MCP protocol: all messages go to stderr.
@@ -21,7 +23,9 @@ usage:
   moodscore serve [--macros FILE] [--no-audio]        MCP server over stdio, playing live
   moodscore play [SECONDS] [--macros FILE]            live demo without MCP (default 40 s)
   moodscore render OUT.wav [SECONDS] [--macros FILE]  offline demo to a WAV file (default 30 s)
-  moodscore params                                    list the DSP parameters";
+  moodscore params                                    list the DSP parameters
+  moodscore analyze FILE.wav [--from S] [--to S] [--band LO HI] [--pitch LO HI] [--target FILE]
+                                                      measure a sound and print a JSON report";
 
 const OFFLINE_SAMPLE_RATE: u32 = 48_000;
 
@@ -50,6 +54,7 @@ fn main() -> ExitCode {
             print_params();
             Ok(())
         }
+        Some("analyze") => analyze(&args[1..]),
         _ => {
             eprintln!("Moodscore {}\n\n{USAGE}", env!("CARGO_PKG_VERSION"));
             return ExitCode::FAILURE;
@@ -59,6 +64,63 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(e),
     }
+}
+
+/// `analyze FILE [--from S] [--to S] [--band LO HI] [--pitch LO HI] [--target FILE]`.
+fn analyze(args: &[String]) -> Result<()> {
+    let mut args = args.to_vec();
+    let num = |v: Option<String>, what: &str| -> Result<Option<f64>> {
+        v.map(|s| {
+            s.parse::<f64>()
+                .map_err(|_| format!("{what}: '{s}' is not a number").into())
+        })
+        .transpose()
+    };
+    let pair = |args: &mut Vec<String>, name: &str| -> Result<Option<(f32, f32)>> {
+        match args.iter().position(|a| a == name) {
+            None => Ok(None),
+            Some(i) if i + 2 < args.len() => {
+                let hi: f32 = args
+                    .remove(i + 2)
+                    .parse()
+                    .map_err(|_| format!("{name}: bad number"))?;
+                let lo: f32 = args
+                    .remove(i + 1)
+                    .parse()
+                    .map_err(|_| format!("{name}: bad number"))?;
+                args.remove(i);
+                Ok(Some((lo, hi)))
+            }
+            Some(_) => Err(format!("{name} needs two numbers").into()),
+        }
+    };
+    let from = num(take_option(&mut args, "--from")?, "--from")?;
+    let to = num(take_option(&mut args, "--to")?, "--to")?;
+    let target = take_option(&mut args, "--target")?;
+    let band = pair(&mut args, "--band")?;
+    let pitch = pair(&mut args, "--pitch")?;
+    let file = args.first().ok_or("analyze needs a WAV file")?;
+    let mut audio = moodscore_ear::Audio::read_wav(std::path::Path::new(file))?;
+    if from.is_some() || to.is_some() {
+        audio = audio.slice(from.unwrap_or(0.0), to.unwrap_or(f64::INFINITY));
+    }
+    if let Some((lo, hi)) = band {
+        audio = audio.band(Some(lo), Some(hi));
+    }
+    let mut opts = moodscore_ear::Options::default();
+    if let Some(p) = pitch {
+        opts.pitch_range = p;
+    }
+    let mut report = moodscore_ear::analyze(&audio, &opts);
+    if let Some(t) = target {
+        let t = moodscore_ear::Target::parse(&std::fs::read_to_string(&t)?)?;
+        report.comparison = Some(t.compare(&report));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&moodscore_ear::to_json(&report))?
+    );
+    Ok(())
 }
 
 fn fail(e: impl std::fmt::Display) -> ExitCode {

@@ -1,0 +1,16 @@
+{
+  "name": "deep_moog_bass",
+  "description": "A deep, round mono bass that slides between notes. Measured from a melodic-techno reference track (numbers only): almost all fundamental, a steep roll-off, mono, slides of about a quarter of a second, steady pitch. The harmonic levels come from a full mix, so their tolerances are wide.",
+  "bpm": 128,
+  "phrase": "A#1:4~ F2:4",
+  "criteria": {
+    "tilt_db_per_octave": [-12.5, 3],
+    "harmonic_2_db": [-15, 6],
+    "harmonic_3_db": [-21, 6],
+    "harmonic_5_db": [-38, 8],
+    "low_correlation": [1.0, 0.05],
+    "mid_correlation": [0.9, 0.1],
+    "glide_ms": [290, 70],
+    "wobble_cents": [2, 3]
+  }
+}
