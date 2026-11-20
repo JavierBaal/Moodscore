@@ -491,3 +491,29 @@ fn the_bass_holds_a_steady_level() {
         - windows.iter().cloned().fold(f32::MAX, f32::min);
     assert!(swing < 2.5, "level swings {swing:.1} dB: {windows:?}");
 }
+
+#[test]
+fn legato_glides_only_between_overlapping_notes() {
+    let make = |legato: f32| {
+        sine(|p| {
+            p.set(P::PartVoices, 1.0);
+            p.set(P::PartLegato, legato);
+            p.set(P::PartGlide, 0.3);
+            p.set(P::AmpRelease, 0.01);
+        })
+    };
+    // A detached note: A3, let go, then A4.
+    let detached = |legato: f32| {
+        let mut p = make(legato);
+        render(
+            &mut p,
+            &[(0, on(57)), (4800, Event::NoteOff { note: 57 })],
+            9600,
+        );
+        let out = render(&mut p, &[(0, on(69))], 9600);
+        freq(&out[480..2400])
+    };
+    // With legato it starts on its own pitch; without, it slides as before.
+    assert!((detached(1.0) - 440.0).abs() < 2.0, "{}", detached(1.0));
+    assert!(detached(0.0) < 400.0, "{}", detached(0.0));
+}

@@ -187,9 +187,16 @@ impl Part {
         self.depth += 1;
 
         let legato = self.get(P::PartLegato) >= 0.5;
-        let glide = self.glide_from();
+        let overlapping = self.voices[0].held && self.voices[0].is_active();
+        // Legato glides only between overlapping notes (fingered
+        // portamento): a detached note starts on its own pitch.
+        let glide = if legato && !overlapping {
+            None
+        } else {
+            self.glide_from()
+        };
         let v = &mut self.voices[0];
-        if legato && v.held && v.is_active() {
+        if legato && overlapping {
             v.retarget(note);
             if glide.is_none() {
                 v.pitch = note as f32;

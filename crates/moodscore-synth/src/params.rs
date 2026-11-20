@@ -240,7 +240,7 @@ params! {
 
     PartVoices = "part/voices", 1.0, 4.0, 4.0, Int, None, "notes that can sound at once (1 = monophonic)";
     PartLegato = "part/legato", 0.0, 1.0, 0.0, Int, None, "monophonic only: 1 slides between overlapping notes without restarting the envelopes";
-    PartGlide = "part/glide", 0.0, 5.0, 0.0, Linear, S, "portamento: time to slide to a new note";
+    PartGlide = "part/glide", 0.0, 5.0, 0.0, Linear, S, "portamento: time to slide to a new note (with part/legato 1, only between overlapping notes)";
     Expression = "part/expression", 0.0, 1.0, 0.0, Linear, None, "a free control for the agent to move, routed by the modulation slots";
     Analog = "part/analog", 0.0, 1.0, 0.0, Linear, None, "analog drift: each voice slightly out of tune and wandering slowly, its filter and envelopes a little different (0 exact, 0.3 alive, 1 an old synth)";
 
