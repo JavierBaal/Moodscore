@@ -8,7 +8,7 @@
     "osc1/unison": 3,
     "osc1/detune": 10.0,
     "osc1/spread": 1.0,
-    "osc2/level": 0.5,
+    "osc2/level": 0.35,
     "osc2/shape": 2.3,
     "osc2/octave": -1,
     "osc2/unison": 2,

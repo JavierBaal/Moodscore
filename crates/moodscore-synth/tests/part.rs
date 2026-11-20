@@ -471,3 +471,23 @@ fn the_ensemble_widens_and_keeps_the_lows_mono() {
         "about the same level: {dry_rms} -> {rms}"
     );
 }
+
+#[test]
+fn the_bass_holds_a_steady_level() {
+    // Detuned copies of a low note drift in and out of phase over seconds and
+    // the fundamental swells and vanishes. The bass preset must not.
+    let bass = moodscore_synth::Preset::factory()
+        .into_iter()
+        .find(|p| p.name == "moog_bass")
+        .unwrap();
+    let mut p = Part::new(SR, 3);
+    p.set_patch(&bass.patch.0);
+    let x = render(&mut p, &[(0, on(34))], 10 * 48_000);
+    let windows: Vec<f32> = x[24_000..456_000]
+        .chunks(24_000)
+        .map(|w| 20.0 * rms(w).log10())
+        .collect();
+    let swing = windows.iter().cloned().fold(f32::MIN, f32::max)
+        - windows.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(swing < 2.5, "level swings {swing:.1} dB: {windows:?}");
+}
