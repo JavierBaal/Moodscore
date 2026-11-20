@@ -813,10 +813,17 @@ mod tests {
                 );
             }
             run(&mut r, 2.0);
-            let (dl, _) = stereo(&mut r, 96_000);
+            // Play each preset the way it is meant to be played: slow presets
+            // (a soft attack) hold a chord, fast ones run an arpeggio.
+            let attack = synth_params::PARAMS
+                .iter()
+                .position(|p| p.path == "amp_env/attack")
+                .map(|i| preset.patch.0[i])
+                .unwrap();
+            let len = if attack >= 0.05 { 144_000 } else { 96_000 };
+            let (dl, _) = stereo(&mut r, len);
             let base = h.frames_rendered();
-            for (i, note) in [57u8, 60, 64, 69, 72, 69, 64, 60].into_iter().enumerate() {
-                let at = base + i as u64 * 12_000;
+            let on = |at: u64, note: u8| {
                 h.note(
                     0,
                     at,
@@ -824,10 +831,21 @@ mod tests {
                         note,
                         velocity: 0.9,
                     },
-                );
-                h.note(0, at + 10_000, NoteEvent::NoteOff { note });
+                )
+            };
+            if attack >= 0.05 {
+                for note in [57u8, 60, 64] {
+                    on(base, note);
+                    h.note(0, base + 120_000, NoteEvent::NoteOff { note });
+                }
+            } else {
+                for (i, note) in [57u8, 60, 64, 69, 72, 69, 64, 60].into_iter().enumerate() {
+                    let at = base + i as u64 * 12_000;
+                    on(at, note);
+                    h.note(0, at + 10_000, NoteEvent::NoteOff { note });
+                }
             }
-            let (l, rr) = stereo(&mut r, 96_000);
+            let (l, rr) = stereo(&mut r, len);
             // Level above 300 Hz, where the notes live and the drones thin out.
             let rms = |x: &[f32]| {
                 let c = (-std::f32::consts::TAU * 300.0 / SR as f32).exp();

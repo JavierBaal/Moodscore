@@ -3,7 +3,7 @@
   "description": "A bright, short plucked note: the filter snaps open and closes as the note dies away, with a dotted-eighth echo. For arpeggios and ostinatos.",
   "params": {
     "part/voices": 4,
-    "part/level": 0.85,
+    "part/level": 1.0,
     "osc1/shape": 2.0,
     "osc1/random_phase": 0.0,
     "osc2/level": 0.35,
@@ -11,8 +11,7 @@
     "osc2/pw": 0.35,
     "osc2/fine": 6.0,
     "osc2/random_phase": 0.0,
-    "filter/slope": 24,
-    "filter/cutoff": 380.0,
+    "filter/cutoff": 520.0,
     "filter/resonance": 0.25,
     "filter/keytrack": 0.6,
     "filter/env_amount": 4.5,
@@ -28,10 +27,14 @@
     "mod1/source": "velocity",
     "mod1/dest": "filter/cutoff",
     "mod1/amount": 0.12,
-    "fx/chorus_mix": 0.25,
+    "fx/chorus_mix": 0.0,
     "fx/delay_mix": 0.22,
     "fx/delay_division": "1/8d",
     "fx/delay_feedback": 0.35,
-    "part/reverb_send": 0.3
+    "part/reverb_send": 0.3,
+    "filter/type": "ladder",
+    "filter/drive": 0.1,
+    "part/analog": 0.2,
+    "fx/ensemble": 0.5
   }
 }

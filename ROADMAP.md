@@ -29,7 +29,7 @@ The milestone that decides whether the idea works:
 
 1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free, ready to be read from the audio thread by the step sequencer.
 2. ✅ The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
-3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. Next in the same block: the sound quality pass (ladder filter, analog drift, ensemble width) and four presets tuned against the targets.
+3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. ✅ The sound quality pass in the same block: ladder filter, analog drift, ensemble width, and four presets tuned against the targets (`moog_bass`, `swell_horn`, `glide_arp`, `deep_pad`); pluck and lead moved to the ladder, ensemble and drift.
 4. Step sequencer: arpeggios and ostinatos played by the note voices.
 5. Chained sections: a cue list the engine runs on its own.
 6. `density` and `distance` macros.
@@ -51,14 +51,14 @@ Harmony:
 - [ ] `tension` adds dissonance (suspensions, added ninths, clusters) on top of the harmony
 
 Synth engine for Claude (agreed with Fran on 19 Nov): a Serum/Vital-style synth designed for an agent to shape sounds with, as the engine of the two note voices (and, later, perhaps the drones):
-Done (core, `moodscore-synth`): everything in this list except true wavetables and the four remaining presets (soft pluck, glass bell, aggressive lead, note pad). Effects are per part (distortion, chorus, tempo-synced echo); the reverb is the shared room.
+Done (core, `moodscore-synth`): everything in this list except true wavetables and some presets (soft pluck, glass bell, aggressive lead). Effects are per part (distortion, chorus, ensemble, tempo-synced echo); the reverb is the shared room. Added with the sound quality pass: a Moog-style ladder filter with drive, analog drift (`part/analog`) and a stereo ensemble that keeps the lows mono. Built-in presets: pluck, lead, moog_bass, swell_horn, glide_arp, deep_pad.
 
 - Oscillators: shape morphing (sine, triangle, saw, square, pulse width), FM between oscillators, sync, wavefolding, unison with detune and spread, sub and noise. Table-free to respect the no-locks rule; true wavetables later, written in Rust without locks.
-- Filters: low-pass, band-pass, high-pass, with drive.
+- Filters: low-pass, band-pass, high-pass, and a Moog-style ladder with drive.
 - Envelopes and LFOs, and a modulation matrix (any source to any parameter, a fixed number of slots).
 - Effects: distortion, chorus, delay, reverb.
 - Polyphony where it matters: a pluck needs its tail to ring under the next note (about 4 notes per voice); a lead is monophonic with portamento and delayed vibrato.
-- Presets as data, with names and descriptions, editable without recompiling: pluck, soft pluck, glass bell, lead, aggressive lead, note pad.
+- Presets as data, with names and descriptions, editable without recompiling: pluck, lead, moog_bass, swell_horn, glide_arp, deep_pad; still to come: soft pluck, glass bell, aggressive lead.
 - Tools to set a patch by name, save and load presets, and describe the current patch.
 - Audition, the part that makes it a synth *for Claude*: render a note or a phrase offline (not through the speakers), analyse it and return a description (brightness, attack, decay, harmonic content, noise, stereo width, pitch stability, loudness), so Claude can iterate by numbers while the person judges by ear.
 - Boundary: the note voices play motifs, ostinatos and arpeggios that repeat and follow the harmony. Long melodies composed note by note stay in Four Hands Studio; Phase 3's generative melody will build on these voices.
@@ -104,7 +104,7 @@ Out of scope: fully composed songs with melody, harmony and form written note by
 
 ## Phase 4: Listening
 
-- Output analysis and the `listen` tool
+- [x] Output analysis and the `listen` tool (brought forward into Phase 2 with `audition`)
 - Human overrides reported through `get_state`
 - Agent guide: a prompt or skill teaching agents how to perform with Moodscore
 

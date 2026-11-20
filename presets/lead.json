@@ -15,7 +15,7 @@
     "osc2/fine": 0.0,
     "sub/level": 0.25,
     "shape/drive": 0.15,
-    "filter/cutoff": 2200.0,
+    "filter/cutoff": 1800.0,
     "filter/resonance": 0.2,
     "filter/env_amount": 1.5,
     "filter_env/attack": 0.005,
@@ -35,11 +35,15 @@
     "mod2/source": "expression",
     "mod2/dest": "filter/cutoff",
     "mod2/amount": 0.3,
-    "fx/chorus_mix": 0.2,
+    "fx/chorus_mix": 0.0,
     "fx/delay_mix": 0.18,
     "fx/delay_division": "1/4",
     "fx/delay_feedback": 0.3,
-    "part/level": 0.45,
-    "part/reverb_send": 0.3
+    "part/level": 0.55,
+    "part/reverb_send": 0.3,
+    "filter/type": "ladder",
+    "filter/drive": 0.3,
+    "part/analog": 0.25,
+    "fx/ensemble": 0.4
   }
 }

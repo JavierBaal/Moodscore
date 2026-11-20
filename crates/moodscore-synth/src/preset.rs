@@ -18,6 +18,10 @@ use crate::params::{find, Kind, Patch, MOD_DESTS, MOD_SLOTS, MOD_SOURCES, P, PAR
 pub const FACTORY: &[&str] = &[
     include_str!("../../../presets/pluck.json"),
     include_str!("../../../presets/lead.json"),
+    include_str!("../../../presets/moog_bass.json"),
+    include_str!("../../../presets/swell_horn.json"),
+    include_str!("../../../presets/glide_arp.json"),
+    include_str!("../../../presets/deep_pad.json"),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -341,7 +345,7 @@ mod tests {
     #[test]
     fn factory_presets_parse_and_round_trip() {
         let all = Preset::factory();
-        assert_eq!(all.len(), 2);
+        assert_eq!(all.len(), 6);
         for p in &all {
             assert!(!p.description.is_empty());
             let back = Preset::parse(&p.to_json()).unwrap();

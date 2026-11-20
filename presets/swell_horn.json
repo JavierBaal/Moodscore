@@ -1,0 +1,32 @@
+{
+  "name": "swell_horn",
+  "description": "Melancholic synth horns: a chord that opens while it fades, the ladder filter climbing for three and a half seconds as the level falls, very wide. Tuned against the swell_horn target. For slow chords that breathe, two bars each.",
+  "params": {
+    "part/voices": 4,
+    "part/analog": 0.35,
+    "osc1/shape": 2.0,
+    "osc1/unison": 3,
+    "osc1/detune": 12.0,
+    "osc1/spread": 0.4,
+    "osc2/level": 0.6,
+    "osc2/shape": 2.0,
+    "osc2/fine": -7.0,
+    "filter/type": "ladder",
+    "filter/cutoff": 420,
+    "filter/keytrack": 0.3,
+    "filter/resonance": 0.3,
+    "filter/drive": 0.35,
+    "filter/env_amount": 3.6,
+    "filter_env/attack": 3.5,
+    "filter_env/decay": 4.0,
+    "filter_env/sustain": 1.0,
+    "filter_env/release": 1.0,
+    "amp_env/attack": 0.1,
+    "amp_env/decay": 9.5,
+    "amp_env/sustain": 0.0,
+    "amp_env/release": 1.2,
+    "fx/ensemble": 0.65,
+    "part/level": 1.0,
+    "part/reverb_send": 0.35
+  }
+}

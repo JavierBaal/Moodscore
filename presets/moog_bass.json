@@ -1,0 +1,31 @@
+{
+  "name": "moog_bass",
+  "description": "A deep, round mono bass in the Moog tradition: two saws a few cents apart through a driven ladder filter, almost all fundamental, sliding a quarter of a second between notes. Tuned against the deep_moog_bass target. For basslines that walk the harmony.",
+  "params": {
+    "part/voices": 1,
+    "part/legato": 1,
+    "part/glide": 0.3,
+    "part/analog": 0.12,
+    "osc1/level": 1.0,
+    "osc1/shape": 2.0,
+    "osc1/unison": 2,
+    "osc1/detune": 5.0,
+    "osc1/spread": 0.1,
+    "osc1/random_phase": 0.3,
+    "filter/type": "ladder",
+    "filter/cutoff": 370.0,
+    "filter/keytrack": 0.8,
+    "filter/resonance": 0.25,
+    "filter/drive": 0.3,
+    "filter/env_amount": 1.0,
+    "filter_env/attack": 0.003,
+    "filter_env/decay": 0.25,
+    "filter_env/sustain": 0.3,
+    "amp_env/attack": 0.005,
+    "amp_env/decay": 0.3,
+    "amp_env/sustain": 0.9,
+    "amp_env/release": 0.15,
+    "part/level": 1.0,
+    "part/reverb_send": 0.05
+  }
+}

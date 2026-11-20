@@ -129,7 +129,7 @@ Play a phrase: to audition a patch, or to place a motif or a line.
 
 ### `list_presets` ✅ / `save_preset` ✅
 
-`list_presets` gives each preset's name, description and whether it is built in. `save_preset` (`part`, `name`, `description`, `overwrite`) saves a part's sound; it can't shadow a built-in name. Saved presets are JSON files in `MOODSCORE_PRESETS`, or the platform's data folder (`%APPDATA%\Moodscore\presets` on Windows, `~/Library/Application Support/Moodscore/presets` on macOS, `~/.local/share/moodscore/presets` elsewhere). Built-in presets live in `presets/` in the repository.
+`list_presets` gives each preset's name, description and whether it is built in. `save_preset` (`part`, `name`, `description`, `overwrite`) saves a part's sound; it can't shadow a built-in name. Saved presets are JSON files in `MOODSCORE_PRESETS`, or the platform's data folder (`%APPDATA%\Moodscore\presets` on Windows, `~/Library/Application Support/Moodscore/presets` on macOS, `~/.local/share/moodscore/presets` elsewhere). Built-in presets live in `presets/` in the repository: `pluck`, `lead`, `moog_bass` (deep mono bass, sliding), `swell_horn` (horns that open as they fade), `glide_arp` (soft legato arpeggio) and `deep_pad` (wide, slow pad). The last four were tuned with `audition` against the targets of the same family, and pass them both dry and in the room.
 
 ## Melody (planned, Phase 3)
 

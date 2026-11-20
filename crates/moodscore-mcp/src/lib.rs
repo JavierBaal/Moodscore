@@ -76,7 +76,8 @@ from the pace. `get_state` reports the current pace.
 the sound is, never with a jump.
 - Two note parts, note_1 and note_2, play notes over the drones: plucks, \
 leads, motifs. Each is a synth you shape: load a preset with `patch` \
-(`list_presets` lists them; pluck and lead come built in), adjust it with \
+(`list_presets` lists them; built in: pluck, lead, moog_bass, swell_horn, \
+glide_arp, deep_pad), adjust it with \
 `patch` set (every parameter is listed with its range in the patch \
 description and in docs), and hear it with `play_notes`, a phrase in beats \
 that follows the tempo. Write phrases in the short form (phrase: \
@@ -206,7 +207,7 @@ const MAX_CHORDS: usize = 64;
 pub struct PatchArgs {
     /// Which note part: 1 or 2. Default 1.
     pub part: Option<serde_json::Value>,
-    /// Load this preset first (see list_presets), e.g. "pluck" or "lead".
+    /// Load this preset first (see list_presets), e.g. "pluck", "moog_bass" or "deep_pad".
     pub preset: Option<String>,
     /// Parameters to change, as path → value, e.g. {"filter/cutoff": 1200, "osc1/shape": 2.5, "mod1/source": "lfo1"}. Choices by name. Omit to just describe the patch.
     pub set: Option<serde_json::Map<String, serde_json::Value>>,
