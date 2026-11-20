@@ -694,3 +694,108 @@ fn slash_chords_move_the_bass() {
     assert_eq!(pc(after), 1, "C# in the bass ({after} Hz)");
     assert_eq!(d.state(5.0).harmony.unwrap().chord.name, "D/C#");
 }
+
+// ---------------------------------------------------------------- sequences
+
+#[test]
+fn the_sequencer_sees_the_chords_ahead() {
+    let mut d = director();
+    d.set_tempo(0.0, Some(120.0), None, 0.0, Curve::Linear, true)
+        .unwrap();
+    assert!(d.chord_at(0.0).is_none());
+    let chords = [
+        ("i", Length::Bars(1.0)),
+        ("VI", Length::Bars(1.0)),
+        ("iv", Length::Bars(1.0)),
+        ("V", Length::Bars(1.0)),
+    ];
+    d.harmony(0.0, plan_in("Bb", "aeolian", &chords, true), false)
+        .unwrap();
+    d.tick(0.1);
+    let name = |t: f64| d.chord_at(t).unwrap().chord.name;
+    // A bar is 2 s: the sequencer can ask about any time ahead.
+    assert_eq!(
+        [name(0.5), name(2.5), name(4.5), name(6.5), name(8.5)],
+        ["Bbm", "Gb", "Ebm", "F", "Bbm"]
+    );
+    // The same chord on the next lap is a new chord.
+    assert_ne!(d.chord_at(0.5).unwrap().id, d.chord_at(8.5).unwrap().id);
+    // A new plan waiting for bar 3: until then, the chord sounding now.
+    let mut p = plan_in("A", "dorian", &[("i", Length::Bars(1.0))], true);
+    p.start_on = StartOn::AtBar(3);
+    d.tick(0.5);
+    d.harmony(0.5, p, false).unwrap();
+    assert_eq!(d.chord_at(3.0).unwrap().chord.name, "Bbm");
+    assert_eq!(d.chord_at(4.1).unwrap().chord.name, "Am");
+}
+
+#[test]
+fn a_sequence_plays_through_the_conductor() {
+    use moodscore_director::sequence::{parse_rhythm, Order, Pattern, Source};
+    use moodscore_director::Conductor;
+    use std::time::{Duration, Instant};
+
+    let (engine, mut renderer) = moodscore_engine::new(48_000);
+    let mut d = Director::with_default_mappings(engine.params().to_vec()).unwrap();
+    d.set_tempo(0.0, Some(240.0), None, 0.0, Curve::Linear, true)
+        .unwrap();
+    let c = Conductor::start(d, engine.clone());
+    // Play the audio in real time, as a sound card would.
+    let audio = std::thread::spawn(move || {
+        let (mut l, mut r) = (vec![0.0f32; 480], vec![0.0f32; 480]);
+        let t0 = Instant::now();
+        let mut done = 0u64;
+        while t0.elapsed() < Duration::from_millis(1500) {
+            let due = (t0.elapsed().as_secs_f64() * 48_000.0) as u64;
+            while done + 480 <= due {
+                renderer.render(&mut l, &mut r);
+                done += 480;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+    let pattern = Pattern {
+        source: Source::Arp {
+            order: Order::Up,
+            low: 57,
+            high: 69,
+            notes: Some(vec![57, 60, 64]),
+        },
+        steps: parse_rhythm("x").unwrap(),
+        rate: 0.25,
+        gate: 0.5,
+        velocity: 0.8,
+        accent: 0.15,
+        swing: 0.0,
+        legato: false,
+    };
+    // Without harmony, an arpeggio over the chord sounding is refused.
+    let mut over_chord = pattern.clone();
+    over_chord.source = Source::Arp {
+        order: Order::Up,
+        low: 57,
+        high: 69,
+        notes: None,
+    };
+    assert!(c
+        .sequence(0, over_chord, "arp".into(), StartOn::Now, None)
+        .is_err());
+    let state = c
+        .sequence(0, pattern, "arp".into(), StartOn::Beat, Some(1.0))
+        .unwrap();
+    assert!(state.ends_in.is_some());
+    assert_eq!(c.sequences_of(0).len(), 1);
+    // A sixteenth every 62.5 ms: notes sound within the bar (1 s).
+    let t0 = Instant::now();
+    let mut heard = false;
+    while t0.elapsed() < Duration::from_millis(900) {
+        heard |= engine.active_notes(0) > 0;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(heard, "the sequence never sounded");
+    // One bar, then it is done and gone.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(c.sequences_of(0).is_empty());
+    c.stop();
+    audio.join().unwrap();
+}

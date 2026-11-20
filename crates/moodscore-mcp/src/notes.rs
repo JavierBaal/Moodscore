@@ -143,6 +143,9 @@ pub struct PartStatus {
     pub waiting: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phrase_ends_in: Option<f64>,
+    /// The sequence playing, and the next one if it waits for its bar.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sequences: Vec<moodscore_director::SequenceState>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -159,6 +162,7 @@ pub fn status(c: &Conductor, part: usize, loaded: &Option<(String, Patch)>) -> P
         sounding: c.engine().active_notes(part),
         waiting,
         phrase_ends_in: last.map(|t| ((t - c.now()).max(0.0) * 100.0).round() / 100.0),
+        sequences: c.sequences_of(part),
     }
 }
 

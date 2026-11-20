@@ -166,6 +166,11 @@ impl Key {
         spell(pitch_class, self.flats)
     }
 
+    /// Whether `pitch_class` belongs to the key's scale.
+    pub fn contains(&self, pitch_class: u8) -> bool {
+        (0..7).any(|d| self.degree(d) == pitch_class % 12)
+    }
+
     /// Pitch class of scale degree `d` (0-based).
     fn degree(&self, d: usize) -> u8 {
         (self.tonic + self.degrees[d % 7]) % 12

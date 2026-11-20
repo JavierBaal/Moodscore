@@ -27,10 +27,10 @@ The milestone that decides whether the idea works:
 
 **Agreed order from here (19 Nov 2026):**
 
-1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free, ready to be read from the audio thread by the step sequencer.
+1. ✅ Tempo clock, sample-exact, with tempo gestures; harmony durations in bars and beats. The map is analytic and allocation-free.
 2. ✅ The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
 3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. ✅ The sound quality pass in the same block: ladder filter, analog drift, ensemble width, and four presets tuned against the targets (`moog_bass`, `swell_horn`, `glide_arp`, `deep_pad`); pluck and lead moved to the ladder, ensemble and drift.
-4. Step sequencer: arpeggios and ostinatos played by the note voices.
+4. ✅ Step sequencer: arpeggios and ostinatos played by the note voices (`sequence`), following the harmony and the tempo, and auditioned offline.
 5. Chained sections: a cue list the engine runs on its own.
 6. `density` and `distance` macros.
 
@@ -63,10 +63,12 @@ Done (core, `moodscore-synth`): everything in this list except true wavetables a
 - Audition, the part that makes it a synth *for Claude*: render a note or a phrase offline (not through the speakers), analyse it and return a description (brightness, attack, decay, harmonic content, noise, stereo width, pitch stability, loudness), so Claude can iterate by numbers while the person judges by ear.
 - Boundary: the note voices play motifs, ostinatos and arpeggios that repeat and follow the harmony. Long melodies composed note by note stay in Four Hands Studio; Phase 3's generative melody will build on these voices.
 
-Arpeggios and ostinatos (planned with Fran on 19 Nov; need the tempo clock and the note voices):
-- Step sequencer, 1–16 steps, sample-accurate in the audio thread
-- Arpeggios over the chord that is sounding (up, down, up-down, random; octaves; rate), following the harmony
-- Ostinatos: a short motif that either follows the harmony (transposed with each chord) or stays fixed while the harmony moves under it
+Arpeggios and ostinatos (planned with Fran on 19 Nov, designed on 20 Nov):
+- [x] Step sequencer, up to 64 steps, sample-accurate: worked out a little ahead by the conductor into the note agenda, each note fixed to its frame
+- [x] Arpeggios over the chord that is sounding (up, down, up_down, down_up, random, chord; a register each chord is spread in; rate; rhythm with rests, holds and accents; swing; legato), following the harmony and restarting on each chord
+- [x] Ostinatos: a motif in degrees follows the harmony (the chord's own third, fifth and seventh, the rest from the key); in note names it stays fixed while the harmony moves under it
+- [x] Changes land on the next bar; `audition` plays a sequence offline over the harmony in force
+- [ ] Humanised timing; thinning a pattern with `density`
 
 Pace and time:
 - [x] `set_pace`: a standing default for how long transitions take and their shape ("everything slow today", "short and direct"), reported in the state so every client honours it

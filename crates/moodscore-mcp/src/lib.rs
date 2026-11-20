@@ -11,6 +11,7 @@
 
 mod ears;
 mod notes;
+mod sequencer;
 
 use std::sync::{Arc, Mutex};
 
@@ -86,6 +87,17 @@ limit worth worrying about. When a sound is right, `save_preset` keeps it. \
 Notes share the drones' room. Describe sounds to the person in musical \
 words; move part/expression (with gesture on note_N/part/expression) to \
 open or shape a sound while it plays, if the preset routes it.
+- For anything that repeats (arpeggios, ostinatos, a bass figure, a pulse \
+of notes), use `sequence` instead of writing the notes out: one call plays \
+it in time and follows the harmony on its own. arp spreads each chord inside \
+range (\"up_down\", range [\"F4\", \"C#5\"], rate \"1/8t\"); a motif in \
+degrees follows the chords (\"1 5 8 5\", around \"A#1\" for a bass), in \
+note names it stays put. It starts on the next bar, and a new sequence on \
+the same part takes over on a bar, so a section change is one call per \
+part. Start harmony with start_on: \"bar\" or at_bar too, so chords change \
+on the downbeat with the sequence. With legato: true and a legato preset \
+(glide_arp, moog_bass) the notes slide into each other. Hear a sequence \
+first with audition (sequence: the same fields).
 - You can't hear, so measure: `audition` renders a part's current sound \
 playing a phrase, offline (nothing sounds), and reports its brightness, \
 harmonics, attack, how it changes over each note, glides, pitch steadiness \
@@ -268,9 +280,29 @@ pub struct PlayNotesArgs {
 type Loaded = [Option<(String, Patch)>; PARTS];
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SequenceArgs {
+    /// Which note part: 1 or 2. Default 1.
+    pub part: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub spec: sequencer::SequenceSpec,
+    /// When it starts, and the part's current sequence stops: "bar" (the next downbeat, default), "beat" or "now".
+    pub start_on: Option<String>,
+    /// Start on the downbeat of this bar instead (see get_state tempo.bar): use the same bar as harmony and the other part so layers start together.
+    pub at_bar: Option<i64>,
+    /// How many bars it plays. Default: until stopped or replaced.
+    pub bars: Option<f64>,
+    /// Stop the part's sequence, on the next bar (or start_on, at_bar). The other fields are ignored.
+    pub stop: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditionArgs {
     /// Which note part's current sound: 1 or 2. Default 1.
     pub part: Option<serde_json::Value>,
+    /// Play a sequence instead of a phrase (the same fields as the sequence tool: arp or motif, range, rate, rhythm…), from the next bar over the harmony and tempo in force.
+    pub sequence: Option<sequencer::SequenceSpec>,
+    /// Bars of the sequence to play. Default 2.
+    pub bars: Option<f64>,
     /// What to play, in the short phrase form ("A3:2", "A#1:4~ F2:4", "A3+C4+E4:8"). Default: the target's phrase, else "A3:2".
     pub phrase: Option<String>,
     /// Tempo for the phrase. Default: the target's, else the current tempo.
@@ -352,6 +384,15 @@ fn wait_for(c: &Conductor, start_in: Option<f32>, at_bar: Option<i64>) -> Result
             Ok((t - c.now()).max(0.0) as f32)
         }
         (s, None) => Ok(s.unwrap_or(0.0)),
+    }
+}
+
+/// Where a sequence starts: like [`start_on`], but on the next bar unless
+/// told otherwise.
+fn start_on_bar(start: Option<&str>, at_bar: Option<i64>) -> Result<StartOn, String> {
+    match (start.map(str::trim).filter(|s| !s.is_empty()), at_bar) {
+        (None, None) => Ok(StartOn::Bar),
+        (s, b) => start_on(s, b),
     }
 }
 
@@ -732,6 +773,32 @@ impl MoodscoreServer {
             .filter(|t| !t.trim().is_empty())
             .map(moodscore_ear::Target::find)
             .transpose()?;
+        if let Some(spec) = &args.sequence {
+            if args.phrase.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                return Err("give a phrase or a sequence, not both".into());
+            }
+            if args.bpm.is_some() {
+                return Err("a sequence plays at the tempo in force (set it with tempo)".into());
+            }
+            let (pattern, plays) = spec.pattern()?;
+            let bars = args.bars.unwrap_or(2.0);
+            let (report, played) = ears::audition_sequence(
+                &self.conductor,
+                part,
+                pattern,
+                bars,
+                args.room.unwrap_or(false),
+                target,
+            )?;
+            let mut value = moodscore_ear::to_json(&report);
+            if let Some(obj) = value.as_object_mut() {
+                let mut p = played;
+                p["part"] = serde_json::json!(moodscore_engine::part_prefix(part));
+                p["sequence"] = serde_json::json!(plays);
+                obj.insert("played".into(), p);
+            }
+            return Ok(serde_json::to_string_pretty(&value).unwrap_or_default());
+        }
         let (report, phrase, bpm) = ears::audition(
             &self.conductor,
             ears::AuditionRequest {
@@ -942,6 +1009,39 @@ impl MoodscoreServer {
                     "seconds": ((end - start) * 100.0).round() / 100.0,
                 }),
             );
+        }
+        Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Play a sequence on a note part: an arpeggio over the chord sounding, or a motif (ostinato), stepping in time with the tempo and following the harmony on its own, until stopped or for some bars. One call replaces a long hand-written phrase. arp (up, down, up_down, down_up, random, chord) spreads each chord of harmony inside range (common notes stay put) and restarts on each chord; rhythm shapes it (\"x.xX .x-x\": x play, X accent, . rest, - hold). motif in degrees follows the harmony (\"1 5 8 5 3 5 b7 5\": the chord's own third, fifth and seventh, other degrees from the key), in note names stays put (\"F4 r C5 A#4\"). rate sets the step (1/16, 1/8t, 1/4d…); legato ties every note into the next (a legato patch slides). Starts on the next bar by default (or start_on, at_bar), and a new sequence on the same part takes over there, on the beat. stop: true ends it on the next bar. Hear it first with audition and the same fields under sequence. Returns the output and the note parts, with what each sequence plays and when it starts or ends."
+    )]
+    fn sequence(&self, Parameters(args): Parameters<SequenceArgs>) -> Result<String, String> {
+        let part = notes::part_index(args.part.as_ref())?;
+        let on = start_on_bar(args.start_on.as_deref(), args.at_bar)?;
+        if args.stop.unwrap_or(false) {
+            self.conductor
+                .stop_sequence(part, on)
+                .map_err(|e| e.to_string())?;
+            return Ok(self.report(Detail::Brief));
+        }
+        let bars = args.bars;
+        if let Some(b) = bars {
+            if !b.is_finite() || !(0.25..=MAX_BARS).contains(&b) {
+                return Err(format!("bars must be between 0.25 and {MAX_BARS}"));
+            }
+        }
+        let (pattern, plays) = args.spec.pattern()?;
+        let state = self
+            .conductor
+            .sequence(part, pattern, plays, on, bars)
+            .map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(&self.report(Detail::Brief)).unwrap_or_default();
+        if let Some(obj) = value.as_object_mut() {
+            let mut seq = serde_json::to_value(&state).unwrap_or_default();
+            seq["part"] = serde_json::json!(moodscore_engine::part_prefix(part));
+            obj.insert("sequence".into(), seq);
         }
         Ok(serde_json::to_string_pretty(&value).unwrap_or_default())
     }

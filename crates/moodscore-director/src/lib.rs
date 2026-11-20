@@ -24,6 +24,7 @@
 pub mod curve;
 pub mod harmony;
 pub mod mapping;
+pub mod sequence;
 pub mod tempo;
 
 use std::fmt;
@@ -267,6 +268,10 @@ pub struct Director {
     /// Parameter ids of each voice's pitch: drone_1/pitch, drone_2/pitch, …
     voice_pitches: Vec<usize>,
     harmony: Option<HarmonyRun>,
+    /// Counts harmonic plans, so a new plan's chords are new chords.
+    plans: u64,
+    /// The chord last voiced, for the sequencer when no plan is walking.
+    sounding: Option<sequence::ChordAt>,
     tempo: TempoMap,
 }
 
@@ -418,6 +423,8 @@ impl Director {
             pace: Pace::default(),
             voice_pitches: Vec::new(),
             harmony: None,
+            plans: 0,
+            sounding: None,
             tempo: TempoMap::default(),
         };
         d.voice_pitches = (1..)
@@ -627,6 +634,7 @@ impl Director {
             }
         }
         let starts_at = self.start_time(now, plan.start_on)?;
+        self.plans += 1;
         self.harmony = Some(HarmonyRun {
             plan,
             starts_at,
@@ -642,6 +650,25 @@ impl Director {
     /// The tempo map in force.
     pub fn tempo(&self) -> &TempoMap {
         &self.tempo
+    }
+
+    /// The chord sounding at time `t` (now or later), as far as the plan
+    /// walking now says: the chord last voiced while a new plan waits for
+    /// its first beat, or after the harmony stopped. None if no harmony has
+    /// played yet.
+    pub fn chord_at(&self, t: f64) -> Option<sequence::ChordAt> {
+        if let Some(run) = &self.harmony {
+            if t >= run.starts_at {
+                let mut r = run.clone();
+                r.walk(t, &self.tempo);
+                return Some(sequence::ChordAt {
+                    chord: r.plan.progression[r.step % r.len()].0.clone(),
+                    key: r.plan.key.clone(),
+                    id: self.plans << 32 | r.step as u64,
+                });
+            }
+        }
+        self.sounding.clone()
     }
 
     /// When something asked to start `on` would start, seen from `now`.
@@ -733,6 +760,11 @@ impl Director {
         let at = run.step_time;
         let idx = step % run.len();
         let chord = run.plan.progression[idx].0.clone();
+        self.sounding = Some(sequence::ChordAt {
+            chord: chord.clone(),
+            key: run.plan.key.clone(),
+            id: self.plans << 32 | step as u64,
+        });
         let (pedal, glide, curve) = (run.plan.pedal, run.plan.glide, run.plan.curve);
 
         let owned: Vec<usize> = self
@@ -1100,7 +1132,13 @@ pub struct Conductor {
     /// Notes waiting to be handed to the engine, by frame. They go when they
     /// are less than [`NOTE_LOOKAHEAD`] away, so the audio thread only ever
     /// holds a few, and a stop can still cancel the rest.
-    agenda: Arc<Mutex<Vec<NoteMsg>>>,
+    agenda: Arc<Mutex<Vec<Queued>>>,
+    /// Sequences playing or waiting to start, oldest first.
+    sequences: Arc<Mutex<Vec<Running>>>,
+    /// How the director's clock maps to engine frames, for everything
+    /// scheduled ahead: one line for every part, so layers that start
+    /// together sound together.
+    line: Arc<Mutex<Option<FrameLine>>>,
     /// The last [`HEARD_SECONDS`] of output, interleaved stereo, for `listen`.
     heard: Arc<Mutex<std::collections::VecDeque<f32>>>,
 }
@@ -1110,6 +1148,48 @@ pub const HEARD_SECONDS: usize = 30;
 
 /// How far ahead notes are handed to the engine.
 const NOTE_LOOKAHEAD: f64 = 0.2;
+
+/// How far ahead sequences are worked out into the agenda.
+const SEQUENCE_AHEAD: f64 = 0.5;
+
+/// Headroom so nothing scheduled ahead reaches the engine late.
+const MARGIN: f64 = 0.03;
+
+/// A note in the agenda, and the sequence it came from (0 for a phrase).
+#[derive(Copy, Clone, Debug)]
+struct Queued {
+    msg: NoteMsg,
+    seq: u64,
+}
+
+/// A sequence a part is playing or will play.
+struct Running {
+    id: u64,
+    part: usize,
+    /// What it plays, in words, for the reports.
+    what: String,
+    runner: sequence::Runner,
+}
+
+/// A straight line from the director's clock to engine frames.
+#[derive(Copy, Clone, Debug)]
+struct FrameLine {
+    t0: f64,
+    f0: f64,
+}
+
+/// What a part's sequence is doing, for the reports.
+#[derive(Clone, Debug, Serialize)]
+pub struct SequenceState {
+    /// What it plays, e.g. "arpeggio up_down F4-C#5 in 1/8t".
+    pub plays: String,
+    /// Seconds until it starts, if it is waiting for its bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starts_in: Option<f64>,
+    /// Seconds until it stops, if it is due to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ends_in: Option<f64>,
+}
 
 /// Most notes waiting in the agenda.
 pub const MAX_AGENDA: usize = 20_000;
@@ -1129,6 +1209,8 @@ impl Conductor {
             running: Arc::new(AtomicBool::new(true)),
             pending_fade: Arc::new(Mutex::new(None)),
             agenda: Arc::new(Mutex::new(Vec::new())),
+            sequences: Arc::new(Mutex::new(Vec::new())),
+            line: Arc::new(Mutex::new(None)),
             heard: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         let loop_c = c.clone();
@@ -1172,6 +1254,7 @@ impl Conductor {
                     }
                 }
             }
+            self.feed_sequences(now);
             self.feed_notes();
             thread::sleep(period);
         }
@@ -1245,6 +1328,13 @@ impl Conductor {
         *self.lock().tempo()
     }
 
+    /// A copy of the director as it is now, and the time on its clock: to
+    /// work out ahead what would happen, offline, without touching it.
+    pub fn snapshot(&self) -> (Director, f64) {
+        let d = self.lock();
+        (d.clone(), self.now())
+    }
+
     /// When something asked to start `on` would start (see
     /// [`Director::start_time`]), on this clock.
     pub fn start_time(&self, on: StartOn) -> Result<f64, DirectorError> {
@@ -1266,7 +1356,7 @@ impl Conductor {
             .collect()
     }
 
-    fn agenda(&self) -> MutexGuard<'_, Vec<NoteMsg>> {
+    fn agenda(&self) -> MutexGuard<'_, Vec<Queued>> {
         self.agenda.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -1281,11 +1371,19 @@ impl Conductor {
         part: usize,
         events: &[(f64, NoteEvent)],
     ) -> Result<(), DirectorError> {
-        /// Headroom so the first note of a phrase is never late.
-        const MARGIN: f64 = 0.03;
-        let now = self.now();
-        let frame = self.engine.frames_rendered();
-        let sr = self.engine.sample_rate() as f64;
+        self.queue(part, 0, events)?;
+        self.feed_notes();
+        Ok(())
+    }
+
+    /// Put events in the agenda, fixed to frames on the shared line.
+    fn queue(
+        &self,
+        part: usize,
+        seq: u64,
+        events: &[(f64, NoteEvent)],
+    ) -> Result<(), DirectorError> {
+        let line = self.frame_line();
         let mut agenda = self.agenda();
         if agenda.len() + events.len() > MAX_AGENDA {
             return Err(DirectorError::Invalid(format!(
@@ -1294,18 +1392,214 @@ impl Conductor {
             )));
         }
         for &(t, event) in events {
-            let ahead = ((t - now).max(0.0) + MARGIN) * sr;
-            agenda.push(NoteMsg {
-                part,
-                frame: frame + ahead as u64,
-                event,
+            agenda.push(Queued {
+                msg: NoteMsg {
+                    part,
+                    frame: line(t),
+                    event,
+                },
+                seq,
             });
         }
         // Stable: events at the same frame keep their order.
-        agenda.sort_by_key(|m| m.frame);
-        drop(agenda);
-        self.feed_notes();
+        agenda.sort_by_key(|m| m.msg.frame);
         Ok(())
+    }
+
+    /// The frame a time on the director's clock lands on. The line is set
+    /// the first time and follows the audio from then on: forward at once
+    /// if the audio gets ahead of it (nothing may be late), back only if
+    /// the audio falls well behind (it stalled or restarted), so the beat
+    /// stays steady.
+    fn frame_line(&self) -> impl Fn(f64) -> u64 {
+        let now = self.now();
+        let sr = self.engine.sample_rate() as f64;
+        let rendered = self.engine.frames_rendered() as f64;
+        let mut line = self.line.lock().unwrap_or_else(|e| e.into_inner());
+        let l = match *line {
+            Some(l) => {
+                let expected = l.f0 + (now - l.t0) * sr;
+                if rendered > expected {
+                    FrameLine {
+                        t0: l.t0,
+                        f0: l.f0 + rendered - expected,
+                    }
+                } else if expected - rendered > 0.1 * sr {
+                    FrameLine {
+                        t0: now,
+                        f0: rendered,
+                    }
+                } else {
+                    l
+                }
+            }
+            None => FrameLine {
+                t0: now,
+                f0: rendered,
+            },
+        };
+        *line = Some(l);
+        move |t: f64| (l.f0 + (t - l.t0 + MARGIN) * sr).max(rendered) as u64
+    }
+
+    /// Start a sequence on `part` (see [`sequence`]): step 0 lands when
+    /// something started `on` would (see [`start_time`](Self::start_time)),
+    /// and it plays for `bars` bars, or until stopped. A sequence already
+    /// on the part stops there, so a change lands on the beat. `plays` says
+    /// what it plays, in words, for the reports.
+    pub fn sequence(
+        &self,
+        part: usize,
+        pattern: sequence::Pattern,
+        plays: String,
+        on: StartOn,
+        bars: Option<f64>,
+    ) -> Result<SequenceState, DirectorError> {
+        let mut seqs = self.sequences();
+        let now = self.now();
+        let (start, origin, end) = {
+            let d = self.lock();
+            if pattern.needs_harmony() && d.harmony.is_none() && d.sounding.is_none() {
+                return Err(DirectorError::Invalid(
+                    "no harmony is playing to follow: start one with harmony, or give the \
+                     arpeggio its notes, or write the motif in note names (F4) instead of degrees"
+                        .into(),
+                ));
+            }
+            let start = d.start_time(now, on)?;
+            let origin = d.tempo.beat_at(start);
+            let end = bars.map(|b| origin + b * d.tempo.meter().quarters_per_bar());
+            (start, origin, end)
+        };
+        for s in seqs.iter_mut().filter(|s| s.part == part) {
+            s.runner.stop_at(origin);
+        }
+        let ids: Vec<u64> = seqs
+            .iter()
+            .filter(|s| s.part == part)
+            .map(|s| s.id)
+            .collect();
+        self.cut(&ids, start);
+        let id = self.next_id();
+        let mut runner =
+            sequence::Runner::new(pattern, origin, id.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        if let Some(e) = end {
+            runner.stop_at(e);
+        }
+        seqs.push(Running {
+            id,
+            part,
+            what: plays,
+            runner,
+        });
+        let state = self.sequence_state(&seqs[seqs.len() - 1], now);
+        drop(seqs);
+        self.feed_sequences(now);
+        Ok(state)
+    }
+
+    /// Stop `part`'s sequences when something started `on` would start
+    /// (the next bar, say), letting go of their notes there.
+    pub fn stop_sequence(&self, part: usize, on: StartOn) -> Result<(), DirectorError> {
+        let mut seqs = self.sequences();
+        let now = self.now();
+        let (start, beat) = {
+            let d = self.lock();
+            let start = d.start_time(now, on)?;
+            (start, d.tempo.beat_at(start))
+        };
+        for s in seqs.iter_mut().filter(|s| s.part == part) {
+            s.runner.stop_at(beat);
+        }
+        let ids: Vec<u64> = seqs
+            .iter()
+            .filter(|s| s.part == part)
+            .map(|s| s.id)
+            .collect();
+        self.cut(&ids, start);
+        Ok(())
+    }
+
+    /// What `part`'s sequences are doing: the one playing, and the next if
+    /// one waits for its bar.
+    pub fn sequences_of(&self, part: usize) -> Vec<SequenceState> {
+        let seqs = self.sequences();
+        let now = self.now();
+        seqs.iter()
+            .filter(|s| s.part == part)
+            .map(|s| self.sequence_state(s, now))
+            .collect()
+    }
+
+    fn sequence_state(&self, s: &Running, now: f64) -> SequenceState {
+        let tempo = self.tempo();
+        let start = tempo.time_at(s.runner.origin());
+        let secs = |t: f64| ((t - now).max(0.0) * 100.0).round() / 100.0;
+        SequenceState {
+            plays: s.what.clone(),
+            starts_in: (start > now).then(|| secs(start)),
+            ends_in: s.runner.end().map(|e| secs(tempo.time_at(e))),
+        }
+    }
+
+    fn sequences(&self) -> MutexGuard<'_, Vec<Running>> {
+        self.sequences.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn next_id(&self) -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Cut what the sequences `ids` already put in the agenda at time `at`:
+    /// notes that would start from then on are dropped, and every note is
+    /// let go by then.
+    fn cut(&self, ids: &[u64], at: f64) {
+        if ids.is_empty() {
+            return;
+        }
+        let frame = self.frame_line()(at);
+        let mut agenda = self.agenda();
+        agenda.retain(|q| {
+            !(ids.contains(&q.seq)
+                && q.msg.frame >= frame
+                && matches!(q.msg.event, NoteEvent::NoteOn { .. }))
+        });
+        for q in agenda.iter_mut() {
+            if ids.contains(&q.seq) && q.msg.frame > frame {
+                q.msg.frame = frame;
+            }
+        }
+        agenda.sort_by_key(|m| m.msg.frame);
+    }
+
+    /// Work every sequence out a little ahead, into the agenda.
+    fn feed_sequences(&self, now: f64) {
+        let mut seqs = self.sequences();
+        if seqs.is_empty() {
+            return;
+        }
+        let mut batches = Vec::new();
+        {
+            let d = self.lock();
+            let chords = |t: f64| d.chord_at(t);
+            for s in seqs.iter_mut() {
+                let events = s.runner.fill(now + SEQUENCE_AHEAD, &d.tempo, &chords);
+                if !events.is_empty() {
+                    batches.push((s.part, s.id, events));
+                }
+            }
+            // A finished sequence is worked out ahead of time; it stays in
+            // the reports until it has actually stopped.
+            seqs.retain(|s| {
+                !s.runner.done() || s.runner.end().is_some_and(|e| d.tempo.time_at(e) > now)
+            });
+        }
+        drop(seqs);
+        for (part, id, events) in batches {
+            // A full agenda drops these steps rather than stalling the loop.
+            let _ = self.queue(part, id, &events);
+        }
     }
 
     /// The last `seconds` of output (at most [`HEARD_SECONDS`]), as left and
@@ -1328,18 +1622,24 @@ impl Conductor {
         (l, r)
     }
 
-    /// Cancel every note still waiting for `part` and release what sounds.
+    /// Cancel every note still waiting for `part`, stop its sequences and
+    /// release what sounds.
     pub fn stop_notes(&self, part: usize) {
-        self.agenda().retain(|m| m.part != part);
+        self.sequences().retain(|s| s.part != part);
+        self.agenda().retain(|m| m.msg.part != part);
         let frame = self.engine.frames_rendered();
         self.engine.note(part, frame, NoteEvent::AllOff);
     }
 
-    /// Notes waiting in the agenda for `part`, and the director time of the
-    /// last one (when the phrase ends).
+    /// Notes of phrases waiting in the agenda for `part` (sequences aside),
+    /// and the director time of the last one (when the phrase ends).
     pub fn pending_notes(&self, part: usize) -> (usize, Option<f64>) {
         let agenda = self.agenda();
-        let mine: Vec<&NoteMsg> = agenda.iter().filter(|m| m.part == part).collect();
+        let mine: Vec<&NoteMsg> = agenda
+            .iter()
+            .filter(|m| m.msg.part == part && m.seq == 0)
+            .map(|m| &m.msg)
+            .collect();
         let last = mine.last().map(|m| {
             let ahead = m.frame as f64 - self.engine.frames_rendered() as f64;
             self.now() + ahead / self.engine.sample_rate() as f64
@@ -1352,9 +1652,10 @@ impl Conductor {
         let horizon = self.engine.frames_rendered()
             + (NOTE_LOOKAHEAD * self.engine.sample_rate() as f64) as u64;
         let mut agenda = self.agenda();
-        let due = agenda.partition_point(|m| m.frame < horizon);
+        let due = agenda.partition_point(|m| m.msg.frame < horizon);
         let mut sent = 0;
-        for m in &agenda[..due] {
+        for q in &agenda[..due] {
+            let m = q.msg;
             if !self.engine.note(m.part, m.frame, m.event) {
                 break;
             }

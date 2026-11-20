@@ -3,9 +3,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use moodscore_director::{Conductor, Curve, TempoMap};
+use moodscore_director::sequence::{Pattern, Runner};
+use moodscore_director::{Conductor, Curve, StartOn, TempoMap};
 use moodscore_ear::{analyze, Audio, NoteSpan, Options, Report, Target};
-use moodscore_engine::{render_part_offline, synth_params::P};
+use moodscore_engine::{render_part_offline, synth_params::P, NoteEvent};
 
 use crate::notes::{self, Step};
 
@@ -98,6 +99,61 @@ pub struct AuditionRequest {
     pub target: Option<Target>,
 }
 
+/// Silence before the first note of an audition.
+const LEAD_IN: f64 = 0.05;
+
+/// Render `part`'s current sound playing `events` (seconds from the start,
+/// the last note ending at `end`), offline, with a tail long enough for the
+/// release, the echoes and the room to die away.
+fn render_events(
+    c: &Conductor,
+    part: usize,
+    events: &[(f64, NoteEvent)],
+    end: f64,
+    room: bool,
+    quarters_per_second: f32,
+) -> Audio {
+    let patch = notes::current_patch(c, part);
+    let g = |p: P| patch.0[p as usize] as f64;
+    let mut tail = g(P::AmpRelease) * 1.5 + 0.3;
+    if g(P::DelayMix) > 0.0 {
+        tail += 1.5;
+    }
+    if room {
+        tail += 2.0;
+    }
+    let seconds = (end + tail.min(8.0)).min(MAX_AUDITION);
+    let sr = c.engine().sample_rate();
+    let room: Option<Vec<f32>> = room.then(|| {
+        let e = c.engine();
+        let n = e.dsp_param_count();
+        let mut v = c.targets(0..n);
+        for (id, p) in e.params()[..n].iter().enumerate() {
+            if p.path.starts_with("drone_") && p.path.ends_with("/level") {
+                v[id] = 0.0;
+            }
+        }
+        v
+    });
+    let frame_events: Vec<(u64, NoteEvent)> = events
+        .iter()
+        .map(|(t, e)| ((t * sr as f64) as u64, *e))
+        .collect();
+    let (left, right) = render_part_offline(
+        sr,
+        &patch.0,
+        room.as_deref(),
+        &frame_events,
+        (seconds * sr as f64) as usize,
+        quarters_per_second,
+    );
+    Audio {
+        sample_rate: sr,
+        left,
+        right,
+    }
+}
+
 /// Render `part`'s current sound playing a phrase, offline, and measure it.
 pub fn audition(c: &Conductor, req: AuditionRequest) -> Result<(Report, String, f64), String> {
     let phrase = req
@@ -123,55 +179,21 @@ pub fn audition(c: &Conductor, req: AuditionRequest) -> Result<(Report, String, 
         Curve::Linear,
         true,
     );
-    const LEAD_IN: f64 = 0.05;
     let events = notes::schedule(&tempo, LEAD_IN, &steps, 1);
     let (spans, end) = spans(&tempo, LEAD_IN, &steps);
-
-    let patch = notes::current_patch(c, req.part);
-    let g = |p: P| patch.0[p as usize] as f64;
-    // Long enough for the release, the echoes and the room to die away.
-    let mut tail = g(P::AmpRelease) * 1.5 + 0.3;
-    if g(P::DelayMix) > 0.0 {
-        tail += 1.5;
-    }
-    if req.room {
-        tail += 2.0;
-    }
-    let seconds = (end + tail.min(8.0)).min(MAX_AUDITION);
     if end > MAX_AUDITION {
         return Err(format!(
             "that phrase lasts {end:.1} s; an audition can be at most {MAX_AUDITION} s"
         ));
     }
-    let sr = c.engine().sample_rate();
-    let room: Option<Vec<f32>> = req.room.then(|| {
-        let e = c.engine();
-        let n = e.dsp_param_count();
-        let mut v = c.targets(0..n);
-        for (id, p) in e.params()[..n].iter().enumerate() {
-            if p.path.starts_with("drone_") && p.path.ends_with("/level") {
-                v[id] = 0.0;
-            }
-        }
-        v
-    });
-    let frame_events: Vec<(u64, moodscore_engine::NoteEvent)> = events
-        .iter()
-        .map(|(t, e)| ((t * sr as f64) as u64, *e))
-        .collect();
-    let (left, right) = render_part_offline(
-        sr,
-        &patch.0,
-        room.as_deref(),
-        &frame_events,
-        (seconds * sr as f64) as usize,
+    let audio = render_events(
+        c,
+        req.part,
+        &events,
+        end,
+        req.room,
         tempo.quarters_per_second(0.0) as f32,
     );
-    let audio = Audio {
-        sample_rate: sr,
-        left,
-        right,
-    };
     let mut report = analyze(
         &audio,
         &Options {
@@ -260,4 +282,104 @@ pub fn analyze_file(req: FileRequest) -> Result<Report, String> {
         report.comparison = Some(t.compare(&report));
     }
     Ok(report)
+}
+
+/// Render `part`'s current sound playing `bars` bars of a sequence, offline,
+/// from the next bar over the harmony and tempo in force, and measure it.
+/// Also says what was played: bars, tempo, the chords under it.
+pub fn audition_sequence(
+    c: &Conductor,
+    part: usize,
+    pattern: Pattern,
+    bars: f64,
+    room: bool,
+    target: Option<Target>,
+) -> Result<(Report, serde_json::Value), String> {
+    if !bars.is_finite() || !(0.25..=16.0).contains(&bars) {
+        return Err("bars must be between 0.25 and 16".into());
+    }
+    let (d, now) = c.snapshot();
+    let tempo = *d.tempo();
+    let start = d.start_time(now, StartOn::Bar).map_err(|e| e.to_string())?;
+    if pattern.needs_harmony() && d.chord_at(start).is_none() {
+        return Err(
+            "no harmony is playing to follow: set one with harmony first (it can be \
+             set while silent), or give the arpeggio its notes, or write the motif in note names"
+                .into(),
+        );
+    }
+    let origin = tempo.beat_at(start);
+    let bar = tempo.meter().quarters_per_bar();
+    let end_beat = origin + bars * bar;
+    let end = tempo.time_at(end_beat);
+    if end - start > MAX_AUDITION {
+        return Err(format!(
+            "{bars} bars last {:.1} s; an audition can be at most {MAX_AUDITION} s",
+            end - start
+        ));
+    }
+    let mut runner = Runner::new(pattern, origin, 1);
+    runner.stop_at(end_beat);
+    let chords = |t: f64| d.chord_at(t);
+    let events: Vec<(f64, NoteEvent)> = runner
+        .fill(end + 1.0, &tempo, &chords)
+        .into_iter()
+        .map(|(t, e)| (t - start + LEAD_IN, e))
+        .collect();
+    // Measure each step: the notes that start together, until they end.
+    let mut spans: Vec<NoteSpan> = Vec::new();
+    for (i, (t, e)) in events.iter().enumerate() {
+        let NoteEvent::NoteOn { note, .. } = *e else {
+            continue;
+        };
+        let off = events[i + 1..]
+            .iter()
+            .find(|(_, x)| *x == NoteEvent::NoteOff { note })
+            .map_or(end - start + LEAD_IN, |(t, _)| *t);
+        match spans.last_mut() {
+            Some(s) if (s.start - t).abs() < 1e-9 => {
+                s.notes.push(note);
+                s.end = s.end.max(off);
+            }
+            _ => spans.push(NoteSpan {
+                start: *t,
+                end: off,
+                notes: vec![note],
+            }),
+        }
+    }
+    let notes_played = spans.iter().map(|s| s.notes.len()).sum::<usize>();
+    let mut under: Vec<String> = Vec::new();
+    let mut b = origin;
+    while b < end_beat - 1e-9 {
+        if let Some(ch) = d.chord_at(tempo.time_at(b) + moodscore_director::sequence::CHORD_SLACK) {
+            under.push(ch.chord.name);
+        }
+        b += bar;
+    }
+    let audio = render_events(
+        c,
+        part,
+        &events,
+        end - start + LEAD_IN,
+        room,
+        tempo.quarters_per_second(start) as f32,
+    );
+    let mut report = analyze(
+        &audio,
+        &Options {
+            notes: spans,
+            ..Options::default()
+        },
+    );
+    if let Some(t) = &target {
+        report.comparison = Some(t.compare(&report));
+    }
+    let played = serde_json::json!({
+        "bars": bars,
+        "bpm": (tempo.bpm_at(start) * 10.0).round() / 10.0,
+        "chords": under,
+        "notes": notes_played,
+    });
+    Ok((report, played))
 }

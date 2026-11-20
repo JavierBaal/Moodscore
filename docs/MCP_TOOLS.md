@@ -107,7 +107,7 @@ The parameters (inside a part; as engine parameters they are `note_1/<path>`, so
 | Colour | `fm/amount` (osc2 modulates osc1), `sub/level`, `sub/octave`, `noise/level`, `shape/fold`, `shape/drive` |
 | Filter | `filter/type` (`low_pass`, `band_pass`, `high_pass`: clean state-variable; `ladder`: a four-pole Moog-style low-pass that saturates and thickens, self-oscillating at full resonance, keeping most of its bass), `filter/slope` (12, 24; not for the ladder), `filter/cutoff` (Hz), `filter/resonance`, `filter/keytrack`, `filter/env_amount` (octaves), `filter/drive` (ladder only) |
 | Envelopes | `amp_env/…`, `filter_env/…`, `mod_env/…`: `attack`, `decay`, `sustain`, `release` (seconds; sustain 0–1); `amp_env/velocity` |
-| Playing | `part/voices` (1–4; 1 is monophonic), `part/legato`, `part/glide` (s), `part/expression` (a free control for the agent), `part/analog` (0 exact; 0.3 alive; 1 an old synth: each note slightly out of tune and wandering, its cutoff and envelope times a little different) |
+| Playing | `part/voices` (1–4; 1 is monophonic), `part/legato` (monophonic: overlapping notes slide without restarting the envelopes; a detached note starts on its own pitch), `part/glide` (s; with legato, only between overlapping notes), `part/expression` (a free control for the agent), `part/analog` (0 exact; 0.3 alive; 1 an old synth: each note slightly out of tune and wandering, its cutoff and envelope times a little different) |
 | LFOs | `lfo1/…`, `lfo2/…`: `shape` (`sine`, `triangle`, `saw`, `square`, `random`), `rate` (Hz), `sync`, `division` (`1/32` … `4`, with `t` triplets and `d` dotted), `delay`, `fade` (s), `retrigger` |
 | Modulation | `mod1/…` … `mod8/…`: `source` (`mod_env`, `filter_env`, `amp_env`, `lfo1`, `lfo2`, `velocity`, `note`, `random`, `expression`), `dest` (`pitch/bend`, `voice/gain`, `voice/pan`, the oscillators' `level`, `shape`, `pw`, `fine`, `detune`, `sync`, `fm/amount`, `sub/level`, `noise/level`, `shape/fold`, `shape/drive`, `filter/cutoff`, `filter/resonance`, `filter/drive`, `lfo1/rate`, `lfo2/rate`), `amount` (−1 … 1, a fraction of the target's range; of its octaves for frequencies; `pitch/bend` spans ±12 semitones, so 0.01 ≈ a quarter tone) |
 | Effects | `fx/distortion`, `fx/ensemble` (string-machine ensemble: three swaying copies per side, very wide; below ~140 Hz the sound stays mono), `fx/chorus_mix`, `fx/chorus_rate`, `fx/chorus_depth`, `fx/delay_mix`, `fx/delay_division`, `fx/delay_feedback`, `fx/delay_width`, `fx/delay_tone` (Hz) |
@@ -125,7 +125,26 @@ Play a phrase: to audition a patch, or to place a motif or a line.
 - **`steps`**, the long form, one object per step: `notes` (a note, a chord as `"A3 C4 E4"`, a MIDI number, or `"rest"`), `beats`, `velocity`, `gate`.
 - Up to 1024 steps, `repeat` up to 64. Follows the tempo map (ramps included); each note starts on its exact sample. `start_on`: `now`, `beat`, `bar`, or `at_bar`.
 - Notes wait in the conductor's agenda and reach the audio thread about 200 ms before they are due. A new phrase adds to what is waiting; `{ "stop": true }` cancels what is waiting on that part and releases what sounds. The state shows, per part, `waiting` and `phrase_ends_in`.
-- Until the step sequencer arrives, this is how notes are played. The sequencer (arpeggios and ostinatos that follow the harmony) runs in the engine.
+- For anything that repeats, use `sequence`: one call, and it follows the harmony.
+
+### `sequence` ✅
+
+Play a sequence on a note part: an arpeggio over the chord sounding, or a motif (an ostinato), stepping with the tempo and following the harmony on its own, until stopped or for some `bars`.
+
+```json
+{ "part": 1, "arp": "up_down", "range": ["F4", "C#5"], "rate": "1/8t", "legato": true, "at_bar": 17 }
+{ "part": 2, "motif": "1 - - 5~ 8 - 5 <5", "around": "A#1", "rate": "1/8", "bars": 8 }
+{ "part": 1, "motif": "F4 r C5 A#4 r F4 C5 r", "rate": "1/16" }
+```
+
+- **`arp`**: `up`, `down`, `up_down`, `down_up` (the top and bottom notes are not repeated), `random` (never the same note twice in a row), `chord` (all its notes on every step). Each chord of `harmony` is spread inside **`range`** `[low, high]` (default `["C4", "C5"]`), so the notes two chords share stay put; the arpeggio starts again from its first note on each new chord. **`notes`** (`"A3 C4 E4"`) arpeggiates those instead, with no harmony needed. **`rhythm`** is one character per step, repeating: `x` play, `X` accent (velocity + `accent`, default 0.15), `.` rest, `-` hold the previous note (`"x.xX .x-x"`; default `"x"`).
+- **`motif`**: one token per step, up to 64. **Degrees follow the harmony**: `1` is the chord's root, `3` `5` `7` its own third, fifth and seventh (a borrowed major V brings its leading tone), `2` `4` `6` come from the key; `b` and `#` alter from the major scale (`b7` is always a minor seventh), `8` is the octave, `<5` an octave down, `>3` an octave up. Each chord's root goes as close to **`around`** as it can (default `"C4"`; `"A#1"` for a bass line). **Note names stay put** while the harmony moves (`F4`, `A#3`; upper case, so `b3` is a degree and `B3` a note). `r` rest, `-` hold, `~` after a note ties it into the next, `@0.9` its velocity, `+` several at once (`1+5`). A motif carries its own rhythm, so `rhythm` is for arpeggios.
+- **`rate`**: the step, `1/16` (default), `1/8`, `1/8t` (triplet), `1/4d` (dotted)…; it follows the tempo map, ramps included. **`gate`** (0.05–1, default 0.8), **`velocity`** (default 0.8), **`swing`** (0 to just under 0.5: every second step lands that fraction of a step late; 0.33 is a shuffle), **`legato`** (tie every note into the next; with a legato patch such as `glide_arp` or `moog_bass` they slide).
+- **When**: on the next bar by default, or `start_on` (`now`, `beat`, `bar`) or `at_bar`. A new sequence on the same part takes over there: the old one lets go of its notes on that downbeat, so a section change is one call per part, on the beat. **`bars`** limits how long it plays (default: until stopped or replaced). `{ "stop": true }` ends it on the next bar (`start_on: "now"` for at once); `play_notes` with `stop` ends it at once too.
+- A chord counts for a step if it lands up to 60 ms after it, so a plan started a hair late still changes on the downbeat; start `harmony` with `start_on: "bar"` or `at_bar` so the drones change there too.
+- Without harmony, an arpeggio over the chord or a motif in degrees is refused (with a hint); after `harmony` stops, they keep to the last chord.
+- Returns the brief report plus `sequence` (`plays`, in words, `starts_in`, `ends_in`). The state shows each part's `sequences`: the one playing and the next if one waits for its bar.
+- How it runs: the conductor works each sequence out about half a second ahead, step by step, asking the director which chord sounds when each step lands, and puts the notes in the same agenda as `play_notes`, fixed to their exact samples on one clock-to-frame line shared by every part. Hear it first with `audition` and `sequence`.
 
 ### `list_presets` ✅ / `save_preset` ✅
 
@@ -173,7 +192,7 @@ The musical clock: tempo and metre. It runs from the moment the engine starts, a
 - **`downbeat`**: make this moment bar 1, beat 1. Otherwise the bar count carries on.
 - Changes never move the beat: the position carries on unbroken, and a glide starts from the tempo of that moment (even in the middle of another glide).
 - The state reports `tempo`: `bpm`, `meter`, `bar` and `beat` now, `seconds_per_bar`, and while a glide is under way `ramping_to` and `ramp_seconds_remaining`.
-- The tempo map is analytic: the beat at any instant is computed exactly from the last change, not accumulated, so it is exact at any sample. Today the director reads it (harmony); the step sequencer will read the same map in the audio thread.
+- The tempo map is analytic: the beat at any instant is computed exactly from the last change, not accumulated, so it is exact at any sample. The director reads it for the harmony, and the sequencer for every step.
 
 ### `pulse`
 
@@ -260,7 +279,7 @@ Freeze everything at its current position (cancel pending gestures without jumpi
 
 ### `get_state` ✅ Phase 1
 
-The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding, notes waiting and when the last one plays); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
+The current pace, any start or release waiting to begin, every macro and parameter with its current value, target, owner (`macro:<name>` or `manual`) and seconds of movement remaining, plus output level (RMS and peak, dBFS). The note parts appear under `notes` (preset, modified, notes sounding, phrase notes waiting and when the last one plays, and the `sequences` playing or waiting); their parameters are reported by `patch`, not here. Voice states and changes the human made by hand arrive in later phases.
 
 ### `audition` ✅
 
@@ -271,6 +290,7 @@ Claude's ears for its own sounds: render a note part's current sound playing a p
 ```
 
 - `phrase` in the short form of `play_notes` (default: the target's phrase, else `"A3:2"`); `bpm` (default: the target's, else the current tempo); `room: true` adds the shared reverb and master, with the drones silent.
+- Or `sequence` (the same fields as the `sequence` tool) and `bars` (default 2, up to 16): plays it from the next bar over the harmony and tempo in force; `played` says the bars, bpm, the chords under it and how many notes.
 - Returns `summary` (the sound in words), `level`, `spectrum` (centroid, energy per band, tilt in dB/octave, noisiness), `stereo` (correlation and balance below 150 Hz, 150 Hz–3 kHz and 3–12 kHz), `over_time` (brightness and level in eight stretches), and per note: attack, change in level over the note, brightness at 10/50/90 %, harmonics 2–8 against the fundamental (single notes), tuning, wobble and glide time. `metrics` has the headline numbers, flat.
 - With `target`, `comparison` lists each criterion: value, target, tolerance, and "on target" or how far above or below.
 

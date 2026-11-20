@@ -89,7 +89,8 @@ tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
     tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state",
-             "patch", "play_notes", "list_presets", "save_preset", "audition", "listen", "analyze_file"},
+             "patch", "play_notes", "sequence", "list_presets", "save_preset", "audition", "listen",
+             "analyze_file"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -299,6 +300,44 @@ check(not err and f and f["starts_in"] > 4, f"release waits for its bar ({f})")
 call("start", {"over": 0.5})
 err, text = call("harmony", {"key": "D", "progression": [{"chord": "V/V", "beats": 2}]})
 check(err and "secondary" in text, f"V/V explained: {text[:80]}")
+
+# Sequences: arpeggios and motifs that step with the tempo and follow the harmony.
+call("harmony", {"stop": True})
+call("tempo", {"bpm": 240, "downbeat": True})
+call("patch", {"part": 1, "preset": "glide_arp"})
+call("patch", {"part": 2, "preset": "moog_bass"})
+err, text = call("sequence", {"part": 1, "arp": "up", "notes": "A3 C4 E4", "rate": "1/16", "start_on": "now"})
+r = json.loads(text) if not err else {}
+check(not err and r["sequence"]["plays"].startswith("arpeggio up over A3 C4 E4"), f"arpeggio over given notes ({text[:100]})")
+time.sleep(0.5)
+st = json.loads(call("get_state", {})[1])["notes"][0]
+check(st["sounding"] >= 1 and len(st.get("sequences", [])) == 1, f"the sequence sounds ({st})")
+call("harmony", {"key": "A", "glide": 0.2, "start_on": "bar",
+                 "progression": [{"chord": "i", "bars": 1}, {"chord": "iv", "bars": 1}]})
+err, text = call("sequence", {"part": 2, "motif": "1 5 8 5", "around": "A2", "rate": "1/8", "bars": 2})
+q = json.loads(text)["sequence"] if not err else {}
+check(not err and 0 < q.get("starts_in", 0) <= 1.0 and q.get("ends_in", 0) > q["starts_in"] + 1.5,
+      f"a motif waits for the bar and plays two ({q or text[:80]})")
+err, text = call("sequence", {"part": 1, "arp": "up_down", "range": ["A3", "E5"], "rate": "1/8t", "legato": True})
+seqs = json.loads(text)["notes"][0].get("sequences", []) if not err else []
+check(not err and len(seqs) == 2 and "ends_in" in seqs[0] and abs(seqs[0]["ends_in"] - seqs[1]["starts_in"]) < 0.02,
+      f"a new sequence takes over on the next bar ({seqs or text[:80]})")
+err, text = call("audition", {"part": 1, "sequence": {"arp": "up", "range": ["A3", "A4"], "rate": "1/8"}, "bars": 1})
+r = json.loads(text) if not err else {}
+check(not err and r["played"]["notes"] == 8 and len(r.get("notes", [])) == 8 and r["played"]["chords"],
+      f"audition plays a bar of the sequence over the harmony ({text[:100] if err else r['played']})")
+err, text = call("sequence", {"part": 1, "motif": "1 5", "rhythm": "x."})
+check(err and "own rhythm" in text, f"a motif's rhythm explained ({text[:60]})")
+err, text = call("sequence", {"part": 1, "arp": "sideways"})
+check(err and "up_down" in text, "a bad order explained")
+err, text = call("sequence", {"part": 1, "stop": True, "start_on": "now"})
+time.sleep(0.3)
+st = json.loads(call("get_state", {})[1])["notes"]
+check(not err and not st[0].get("sequences"), f"stop ends the sequence ({st[0]})")
+call("play_notes", {"part": 2, "stop": True})
+st = json.loads(call("get_state", {})[1])["notes"]
+check(not st[1].get("sequences"), "play_notes stop ends the part's sequence too")
+call("harmony", {"stop": True})
 
 # Ears.
 err, text = call("list_presets", {})
