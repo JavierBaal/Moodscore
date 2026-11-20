@@ -12,6 +12,8 @@ pub struct Track {
 
 /// YIN threshold on the cumulative mean normalised difference.
 const THRESHOLD: f32 = 0.15;
+/// The deepest dip still counts as a pitch below this.
+const FALLBACK: f32 = 0.35;
 
 /// Track the pitch of `x` between `fmin` and `fmax` Hz, every `hop` samples.
 /// Frames quieter than `gate_db` below the loudest are left unpitched.
@@ -92,6 +94,15 @@ pub fn track(x: &[f32], sr: u32, fmin: f32, fmax: f32, hop: usize) -> Track {
             }
             tau += 1;
         }
+        // None under the threshold: take the deepest dip if it is still
+        // clearly periodic (as YIN does), which keeps detuned, beating
+        // sounds (unison, chorus) pitched.
+        let found = found.or_else(|| {
+            let (best, val) = (tau_min..tau_max)
+                .map(|t| (t, cmnd[t]))
+                .fold((0, f32::INFINITY), |m, x| if x.1 < m.1 { x } else { m });
+            (val < FALLBACK).then_some(best)
+        });
         let Some(t) = found else {
             hz.push(None);
             continue;

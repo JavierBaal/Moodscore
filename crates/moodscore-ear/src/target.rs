@@ -96,7 +96,7 @@ impl Target {
                     None => (false, "not measured".to_string()),
                     Some(v) => {
                         let d = v - target;
-                        if d.abs() <= tolerance {
+                        if d.abs() <= tolerance + 1e-4 * tolerance.max(1.0) {
                             (true, "on target".to_string())
                         } else {
                             let excess = d.abs() - tolerance;
