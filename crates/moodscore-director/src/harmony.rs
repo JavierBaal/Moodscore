@@ -9,7 +9,10 @@
 //! - The numeral picks the scale degree: `I` … `VII`. Case picks the
 //!   quality: upper case is major, lower case is minor. So `v` in aeolian is
 //!   the diatonic minor v, and `V` is the borrowed major V.
-//! - `b` or `#` before the numeral alters the root: `bVI`, `bVII`, `#iv°`.
+//! - `b` or `#` before the numeral alters the root counted from the major
+//!   scale, the way borrowed chords are usually written: `bVII` is a whole
+//!   tone below the tonic in any mode (C in D dorian, where `VII` is C too),
+//!   `bVI` and `bIII` the flat sixth and third, `#iv°` a raised fourth.
 //! - `°` (or `o`, `dim`) makes it diminished, `+` (or `aug`) augmented,
 //!   `ø` half-diminished (diminished with a minor seventh).
 //! - Colour, after the numeral and in any order: `7` (the mode's seventh),
@@ -326,7 +329,14 @@ impl Chord {
             }
         }
 
-        let root = ((key.degree(degree) as i32 + accidental).rem_euclid(12)) as u8;
+        // Plain, the mode's own degree; altered, counted from the major
+        // scale (so bVII is the same note in every mode).
+        const MAJOR: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+        let root = if accidental == 0 {
+            key.degree(degree)
+        } else {
+            ((key.tonic as i32 + MAJOR[degree] + accidental).rem_euclid(12)) as u8
+        };
         let interval_to = |pc: u8| (pc + 12 - root) % 12;
 
         while !rest.is_empty() {
@@ -610,6 +620,14 @@ mod tests {
         assert_eq!(names("bVII", &c), ["Bb", "D", "F"]);
         assert_eq!(names("iv", &c), ["F", "Ab", "C"]);
         assert_eq!(names("III+", &c), ["E", "G#", "B#"]);
+        // Alterations count from the major scale in every mode: in D dorian
+        // (and A minor) bVII is a whole tone below the tonic, like VII.
+        let d = key("D", "dorian");
+        assert_eq!(names("bVII", &d), ["C", "E", "G"]);
+        assert_eq!(names("bVII", &d), names("VII", &d));
+        assert_eq!(names("bVI", &a), names("VI", &a));
+        assert_eq!(names("bIII", &a), ["C", "E", "G"]);
+        assert_eq!(names("#iv°", &a), ["D#", "F#", "A"]);
     }
 
     #[test]

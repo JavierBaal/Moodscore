@@ -181,7 +181,7 @@ pub struct GetStateArgs {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ChordStep {
-    /// Roman numeral in the key: upper case major, lower case minor (i, VI, V, bVII). Add ° dim, + aug, ø half-dim; colour with 7, maj7, sus2, sus4, add9 (e.g. iv7, Vsus4, iadd9).
+    /// Roman numeral in the key: upper case major, lower case minor (i, VI, V, bVII). Plain numerals are the mode's own degrees; b or # alters from the major scale (bVII is a whole tone below the tonic in any mode). Add ° dim, + aug, ø half-dim; colour with 7, maj7, sus2, sus4, add9 (e.g. iv7, Vsus4, iadd9).
     pub chord: String,
     /// How long this chord lasts, in seconds. Give exactly one of seconds, beats or bars.
     pub seconds: Option<f32>,
