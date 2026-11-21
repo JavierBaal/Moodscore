@@ -82,9 +82,11 @@ things at its start (or after_bars into it) with the same tools and fields \
 you'd call directly. The engine plays it on its own, everything on its \
 downbeat, so you never wait between calls and the music carries on if the \
 conversation stops. The whole call is checked before anything sounds. Use \
-over_bars for moves and fades that last a section. To change what's coming, \
-call `sections` again with the sections still to come (at_bar); what is \
-sounding plays on. Watch get_state sections for the section and bar now.
+over_bars for moves and fades that last a section; downbeat: true counts \
+bars from 1 where the first begins. The report lists the bar each section \
+begins on. To change what's coming, call `sections` again with the \
+sections still to come (at_bar); what is sounding plays on. Watch get_state \
+sections for the section and bar now.
 - If the person sets a general pace (\"everything slow today\", \"short and \
 direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
 call. Give `over` or `curve` explicitly only when a single move should differ \
@@ -343,6 +345,8 @@ pub struct SectionsArgs {
     pub start_on: Option<String>,
     /// The first begins on the downbeat of this bar instead.
     pub at_bar: Option<i64>,
+    /// Count bars from 1 again where the first section begins, so the sections' bars read 1, 9, 17… Default false: the count runs on.
+    pub downbeat: Option<bool>,
     /// Start again from the first when the last ends. Default false: the last section's sound stays (unless it releases).
     #[serde(rename = "loop")]
     pub looping: Option<bool>,
@@ -1021,7 +1025,9 @@ impl MoodscoreServer {
                 actions: acts,
             });
         }
-        self.conductor.cue(list, on).map_err(|e| e.to_string())?;
+        self.conductor
+            .cue(list, on, args.downbeat.unwrap_or(false))
+            .map_err(|e| e.to_string())?;
         Ok(self.report(Detail::Brief))
     }
 

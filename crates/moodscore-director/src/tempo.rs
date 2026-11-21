@@ -562,7 +562,8 @@ impl TempoMap {
 
     /// The map with a change waiting for quarter note `at` (after `now`): the
     /// same as [`changed`](Self::changed) then, but known now. A change
-    /// already waiting for that beat is replaced.
+    /// already waiting for that beat combines with it (the new one's fields
+    /// win; a new downbeat from either stays).
     #[allow(clippy::too_many_arguments)]
     pub fn scheduled(
         &self,
@@ -576,25 +577,33 @@ impl TempoMap {
     ) -> Result<TempoMap, String> {
         let mut m = *self;
         m.advance(now);
-        let mut list: Vec<Change> = m.changes[..m.len]
-            .iter()
-            .flatten()
-            .copied()
-            .filter(|c| (c.at - at).abs() > 1e-9)
-            .collect();
-        if list.len() >= MAX_PENDING {
-            return Err(format!(
-                "{MAX_PENDING} tempo changes are already waiting; let one happen first"
-            ));
-        }
-        list.push(Change {
+        let mut list: Vec<Change> = m.changes[..m.len].iter().flatten().copied().collect();
+        let mut change = Change {
             at,
             bpm,
             meter,
             ramp,
             curve,
             downbeat,
-        });
+        };
+        // Changes on the same beat combine: what the new one says wins, what
+        // it leaves out (a tempo, a metre, a new downbeat) stays.
+        if let Some(i) = list.iter().position(|c| (c.at - at).abs() <= 1e-9) {
+            let old = list.remove(i);
+            change.bpm = bpm.or(old.bpm);
+            change.meter = meter.or(old.meter);
+            change.downbeat = downbeat || old.downbeat;
+            if bpm.is_none() {
+                change.ramp = old.ramp;
+                change.curve = old.curve;
+            }
+        }
+        if list.len() >= MAX_PENDING {
+            return Err(format!(
+                "{MAX_PENDING} tempo changes are already waiting; let one happen first"
+            ));
+        }
+        list.push(change);
         list.sort_by(|a, b| a.at.total_cmp(&b.at));
         m.len = list.len();
         for (i, slot) in m.changes.iter_mut().enumerate() {
@@ -786,16 +795,16 @@ mod tests {
         let end = m.time_at(16.0);
         assert!(close(m.bpm_at(end + 0.001), 60.0, 1e-6));
         assert!(m.bpm_at(m.time_at(12.0)) < 120.0 && m.bpm_at(m.time_at(12.0)) > 60.0);
-        // Two changes waiting, in order; the same beat replaces.
+        // Two changes waiting, in order; the same beat combines.
         let m2 = m
             .scheduled(
                 0.0,
                 24.0,
-                Some(90.0),
+                None,
                 None,
                 Ramp::Seconds(0.0),
                 Curve::Linear,
-                false,
+                true,
             )
             .unwrap()
             .scheduled(
@@ -809,7 +818,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(m2.pending_changes().len(), 2);
-        assert!(close(m2.bpm_at(m2.time_at(24.0) + 0.01), 100.0, 1e-6));
+        let t = m2.time_at(24.0);
+        assert!(close(m2.bpm_at(t + 0.01), 100.0, 1e-6));
+        // The downbeat of the first stays: bar 1 there.
+        assert_eq!(m2.position(t + 1e-6).bar, 1);
     }
 
     #[test]

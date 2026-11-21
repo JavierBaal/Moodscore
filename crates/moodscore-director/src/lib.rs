@@ -1467,12 +1467,30 @@ impl Conductor {
     /// Run a cue list: its first section begins when something started
     /// `on` would, and the conductor plays the rest on its own, each action
     /// at its moment. Replaces the list running: what it had not done yet
-    /// is dropped; what it set going plays on.
-    pub fn cue(&self, list: cues::CueList, on: StartOn) -> Result<cues::CueState, DirectorError> {
+    /// is dropped; what it set going plays on. With `downbeat`, the bar
+    /// count starts again from 1 where the first section begins.
+    pub fn cue(
+        &self,
+        list: cues::CueList,
+        on: StartOn,
+        downbeat: bool,
+    ) -> Result<cues::CueState, DirectorError> {
         if list.sections.is_empty() {
             return Err(DirectorError::Invalid("there are no sections".into()));
         }
         let start = self.start_time(on)?;
+        if downbeat {
+            let now = self.now();
+            self.lock().tempo_at(
+                now,
+                StartOn::AtTime(start),
+                None,
+                None,
+                tempo::Ramp::Seconds(0.0),
+                Curve::Linear,
+                true,
+            )?;
+        }
         let tempo = self.tempo();
         let running = cues::Running::new(list, cues::Point::Quarter(tempo.beat_at(start)), &tempo);
         *self.cues() = Some(running);

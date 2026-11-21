@@ -201,7 +201,7 @@ Lay out the piece as sections the engine plays on its own, one after another. On
 
 ```json
 {
-  "at_bar": 1,
+  "downbeat": true,
   "sections": [
     { "name": "intro", "bars": 8, "actions": [
         { "harmony": { "key": "Bb", "progression": [{ "chord": "i", "bars": 2 }, { "chord": "VI", "bars": 2 }] } },
@@ -219,13 +219,13 @@ Lay out the piece as sections the engine plays on its own, one after another. On
 }
 ```
 
-- **Sections** follow each other: each lasts **`bars`** (counted in the metre in force when it begins, so a tempo change stretches it in seconds, never in bars) or **`seconds`** (for music without a pulse). The first begins on the next bar (or `start_on`, `at_bar`).
+- **Sections** follow each other: each lasts **`bars`** (counted in the metre in force when it begins, so a tempo change stretches it in seconds, never in bars) or **`seconds`** (for music without a pulse). The first begins on the next bar (or `start_on`, `at_bar`). **`downbeat`** makes that bar 1, so the sections read bars 1, 9, 17… whatever ran before (otherwise the count carries on).
 - **Actions** are the tools you call directly, with the same fields: `harmony`, `tempo`, `morph`, `gesture`, `set_pace`, `patch`, `sequence`, `play_notes`, `start`, `release`. Each happens at the section's start, or **`after_bars`** (`after_seconds`) into it. The section says when, so `start_on`, `at_bar` and `start_in` are refused inside. **`over_bars`** in `morph`, `gesture`, `start`, `release` and `tempo` makes a move last bars instead of seconds.
 - **Atomic**: the whole call is checked before anything is scheduled (chords, presets, motifs, parameters, ranges, an action past its section's end). If one action is wrong, nothing happens and the error names the section and the action.
 - **On the beat**: a tempo change, a harmony, a sequence or a phrase is set up about 0.6 s ahead of its moment and lands exactly on it (the tempo change waits on the tempo map, the harmony waits behind the plan walking, the notes are fixed to their samples); a `patch` lands just before its bar so the first note has the new sound; morphs, gestures and fades fire on the moment. Actions due together run tempo first, then pace, harmony, patches, moves, fades, notes, stops.
 - **`loop`** repeats the list. Without it the last section's sound stays (unless it releases), and the list is done when the last section ends.
 - **Changing course**: a new call replaces what has not happened yet; what is sounding plays on until a section changes it. To change the rest of a piece, send the sections still to come with `at_bar`. `{ "stop": true }` ends the list.
-- The state shows `sections`: the `section` playing, its `bar` of `of_bars`, the `next` and `next_in` seconds (or `ends_in`), `loop`, every section's name, and `errors` (an action that failed when its moment came: a sequence refused for lack of harmony, say).
+- The state shows `sections`: the `section` playing, its `bar` of `of_bars`, the `next` and `next_in` seconds (or `ends_in`), `loop`, every section with the bar it begins on in this lap (`[{name, bar}]`: the bar to give `at_bar` when changing course, or to `listen` to it), and `errors` (an action that failed when its moment came: a sequence refused for lack of harmony, say).
 
 ### `pulse`
 

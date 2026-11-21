@@ -126,6 +126,9 @@ pub(crate) struct Running {
     upcoming: Option<(usize, Point)>,
     /// When the last section ends, if the list does not loop.
     ends: Option<Point>,
+    /// When each section of this lap began or is set to begin (the rest
+    /// follow from the one before).
+    starts: Vec<Option<Point>>,
     errors: VecDeque<String>,
 }
 
@@ -156,11 +159,20 @@ pub struct CueState {
     pub ends_in: Option<f64>,
     #[serde(rename = "loop")]
     pub looping: bool,
-    /// Every section, in order.
-    pub sections: Vec<String>,
+    /// Every section, in order, with the bar it begins on.
+    pub sections: Vec<SectionInfo>,
     /// Actions that failed when their moment came (section: action: why).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<String>,
+}
+
+/// A section in the reports.
+#[derive(Clone, Debug, Serialize)]
+pub struct SectionInfo {
+    pub name: String,
+    /// The bar it begins on in this lap, by the count now (a tempo or metre
+    /// change still to come can move the later ones).
+    pub bar: i64,
 }
 
 fn secs(x: f64) -> f64 {
@@ -170,12 +182,14 @@ fn secs(x: f64) -> f64 {
 impl Running {
     /// Start `list` with its first section at `start`.
     pub(crate) fn new(list: CueList, start: Point, tempo: &TempoMap) -> Self {
+        let n = list.sections.len();
         let mut r = Running {
             list,
             waiting: Vec::new(),
             current: None,
             upcoming: None,
             ends: None,
+            starts: vec![None; n],
             errors: VecDeque::new(),
         };
         r.queue_section(0, start, tempo);
@@ -184,6 +198,10 @@ impl Running {
 
     fn queue_section(&mut self, k: usize, start: Point, tempo: &TempoMap) {
         self.upcoming = Some((k, start));
+        // The first again, once a section has played, is the next lap.
+        if k > 0 || self.current.is_none() {
+            self.starts[k] = Some(start);
+        }
         self.waiting.push(Waiting {
             at: start,
             lead: 0.0,
@@ -247,6 +265,10 @@ impl Running {
     }
 
     fn begin(&mut self, k: usize, at: Point, tempo: &TempoMap) {
+        if k == 0 {
+            self.starts.iter_mut().for_each(|s| *s = None);
+        }
+        self.starts[k] = Some(at);
         self.current = Some((k, at));
         let end = at.plus(self.list.sections[k].length, tempo);
         let n = self.list.sections.len();
@@ -273,7 +295,16 @@ impl Running {
     }
 
     pub(crate) fn state(&self, now: f64, tempo: &TempoMap) -> CueState {
-        let names: Vec<String> = self.list.sections.iter().map(|s| s.name.clone()).collect();
+        let mut sections = Vec::with_capacity(self.list.sections.len());
+        let mut next = None;
+        for (s, known) in self.list.sections.iter().zip(&self.starts) {
+            let at = known.or(next).unwrap_or(Point::Time(now));
+            sections.push(SectionInfo {
+                name: s.name.clone(),
+                bar: tempo.position(at.time(tempo) + 1e-6).bar,
+            });
+            next = Some(at.plus(s.length, tempo));
+        }
         let current = self.current.map(|(k, at)| (&self.list.sections[k], at));
         let (bar, of_bars, of_seconds) = match current {
             Some((s, at)) => match s.length {
@@ -297,7 +328,7 @@ impl Running {
             next_in: self.upcoming.map(|(_, at)| secs(at.time(tempo) - now)),
             ends_in: self.ends.map(|e| secs(e.time(tempo) - now)),
             looping: self.list.looping,
-            sections: names,
+            sections,
             errors: self.errors.iter().cloned().collect(),
         }
     }
@@ -411,6 +442,41 @@ mod tests {
         let st = r.state(13.0, &tempo);
         assert_eq!((st.bar, st.of_bars), (Some(1.0), Some(2.0)));
         assert!(!r.finished(100.0, &tempo));
+    }
+
+    #[test]
+    fn the_reports_say_where_each_section_of_this_lap_begins() {
+        let tempo = TempoMap::default(); // 120 BPM, a bar every 2 s
+        let section = |name: &str, bars| CueSection {
+            name: name.into(),
+            length: Span::Bars(bars),
+            actions: vec![],
+        };
+        let list = CueList {
+            sections: vec![section("verse", 2.0), section("chorus", 1.0)],
+            looping: true,
+        };
+        // Bar 2 is the first downbeat to come.
+        let mut r = Running::new(list, Point::Quarter(4.0), &tempo);
+        let bars = |r: &Running, now| -> Vec<(String, i64)> {
+            r.state(now, &tempo)
+                .sections
+                .into_iter()
+                .map(|s| (s.name, s.bar))
+                .collect()
+        };
+        let lap = |v: i64, c: i64| vec![("verse".to_string(), v), ("chorus".to_string(), c)];
+        assert_eq!(bars(&r, 0.5), lap(2, 4));
+        for i in 0..=1050 {
+            r.due(i as f64 * 0.01, &tempo);
+        }
+        // The second lap: the verse from 8 s (bar 5), the chorus at 12 s;
+        // the next verse is queued for 14 s but this lap still reads 5, 7.
+        assert_eq!(bars(&r, 10.5), lap(5, 7));
+        for i in 1051..=1450 {
+            r.due(i as f64 * 0.01, &tempo);
+        }
+        assert_eq!(bars(&r, 14.5), lap(8, 10));
     }
 
     #[test]

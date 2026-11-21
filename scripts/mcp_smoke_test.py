@@ -378,14 +378,15 @@ plan = {"sections": [
         {"tempo": {"bpm": 120}},
         {"morph": {"darkness": 0.7, "over_bars": 1}},
         {"gesture": {"param": "drone_3/level", "to": 0.3, "over": 0.5}, "after_bars": 0.5}]},
-    {"name": "c", "bars": 1, "actions": [{"release": {"over_bars": 1}}]}]}
+    {"name": "c", "bars": 1, "actions": [{"release": {"over_bars": 1}}]}], "downbeat": True}
 err, text = call("sections", plan)
 sec = json.loads(text).get("sections", {}) if not err else {}
-check(not err and sec.get("next") == "a" and 0 < sec.get("next_in", 9) <= 1.0 and sec["sections"] == ["a", "b", "c"],
-      f"sections are scheduled ({sec or text[:120]})")
+check(not err and sec.get("next") == "a" and 0 < sec.get("next_in", 9) <= 1.0
+      and sec["sections"] == [{"name": "a", "bar": 1}, {"name": "b", "bar": 2}, {"name": "c", "bar": 3}],
+      f"sections are scheduled, counted from bar 1 ({sec or text[:120]})")
 time.sleep(sec.get("next_in", 1.0) + 0.3)
 st = json.loads(call("get_state", {})[1])
-check(st.get("sections", {}).get("section") == "a" and st["harmony"]["chord"]["name"] == "Am"
+check(st.get("sections", {}).get("section") == "a" and st["harmony"]["chord"]["name"] == "Am" and st["tempo"]["bar"] == 1
       and st["notes"][0].get("sequences") and st["notes"][0].get("preset") == "glide_arp",
       f"section a plays its harmony, sound and sequence ({st.get('sections')}, {st['notes'][0]})")
 time.sleep(1.0)
