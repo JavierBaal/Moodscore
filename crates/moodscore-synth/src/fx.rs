@@ -179,6 +179,26 @@ impl Fx {
         self.echo_lp = [0.0; 2];
     }
 
+    /// Let `n` frames of silence go by without computing them: the sweeps
+    /// move on and the echo time glides, as if silence had been processed
+    /// (the lines hold silence already).
+    pub fn idle(&mut self, p: &FxParams, n: usize) {
+        let (sr, n) = (self.sr, n as f32);
+        self.ens_slow = (self.ens_slow + n * 0.62 / sr).fract();
+        self.ens_fast = (self.ens_fast + n * 5.7 / sr).fract();
+        self.chorus_phase = (self.chorus_phase + n * p.chorus_rate / sr).fract();
+        if self.echo_time[0] != 0.0 {
+            let target = [
+                (p.delay_time * sr).clamp(2.0, MAX_DELAY * sr),
+                (p.delay_time * (1.0 + 0.5 * p.delay_width) * sr).clamp(2.0, MAX_DELAY * 1.5 * sr),
+            ];
+            let keep = (-n / (0.1 * sr)).exp();
+            for (t, goal) in self.echo_time.iter_mut().zip(target) {
+                *t = goal + (*t - goal) * keep;
+            }
+        }
+    }
+
     /// Process in place.
     pub fn process(&mut self, p: &FxParams, left: &mut [f32], right: &mut [f32]) {
         let sr = self.sr;

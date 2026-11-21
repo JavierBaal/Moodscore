@@ -38,7 +38,7 @@ Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
 
 Sound:
 - [x] Six drone voices (A minor chord at rest, two sounding), with energy-based normalisation
-- [x] Two note voices (melodic), driven by the synth engine below (`note_1`, `note_2`; `patch`, `play_notes`)
+- [x] Four note parts (melodic), driven by the synth engine below (`note_1` to `note_4`; `patch`, `play_notes`); a part with nothing to play rests and costs next to nothing
 - All six mood macros with data-driven mappings
   - [x] `instability` (pitch drift and detune)
   - [x] Macros can share a parameter (`"mode": "add"`) and target many with `*` patterns

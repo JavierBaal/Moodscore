@@ -13,7 +13,8 @@
 //! default audio device.
 //!
 //! The parameters are the Faust DSP's (the drones and the room) followed by
-//! the two note parts' (`note_1/…`, `note_2/…`, from `moodscore-synth`).
+//! the four note parts' (`note_1/…` to `note_4/…`, from `moodscore-synth`).
+//! A part with nothing sounding rests and costs next to nothing.
 //! Notes travel to the audio thread through a lock-free queue, each stamped
 //! with the frame it belongs to, and start on that exact sample.
 
@@ -28,7 +29,10 @@ pub use moodscore_synth::{params as synth_params, Event as NoteEvent};
 use moodscore_synth::{Bus, Part};
 
 /// Number of note parts.
-pub const PARTS: usize = 2;
+pub const PARTS: usize = 4;
+
+/// Each part's own random seed (its analog drift and free phases).
+const PART_SEEDS: [u32; PARTS] = [0x5eed, 0xbeef, 0xfeed, 0xd00d];
 
 /// Notes that can wait in the queue for the audio thread.
 const NOTE_QUEUE: usize = 1024;
@@ -44,7 +48,7 @@ pub struct NoteMsg {
     pub event: NoteEvent,
 }
 
-/// The path prefix of a part's parameters: `note_1`, `note_2`.
+/// The path prefix of a part's parameters: `note_1` to `note_4`.
 pub fn part_prefix(part: usize) -> String {
     format!("note_{}", part + 1)
 }
@@ -342,10 +346,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
     let chunk_seconds = CHUNK as f32 / sr;
     let renderer = Renderer {
         dsp,
-        parts: [
-            Part::new(sample_rate, 0x5eed),
-            Part::new(sample_rate, 0xbeef),
-        ],
+        parts: std::array::from_fn(|i| Part::new(sample_rate, PART_SEEDS[i])),
         faust_params,
         notes: consumer,
         pending: Vec::with_capacity(NOTE_QUEUE),
@@ -867,10 +868,10 @@ mod tests {
         }
     }
 
-    /// Real-time cost with both parts fully loaded (run with --ignored --nocapture).
+    /// Real-time cost with every part fully loaded (run with --ignored --nocapture).
     #[test]
     #[ignore]
-    fn cost_with_both_parts_full() {
+    fn cost_with_every_part_full() {
         let (h, mut r) = new(SR);
         for part in 0..PARTS {
             for (p, v) in [
@@ -900,8 +901,49 @@ mod tests {
         run(&mut r, 10.0);
         let share = t.elapsed().as_secs_f64() / 10.0;
         println!(
-            "engine with 8 heavy notes: {:.1}% of one core",
+            "engine with {} heavy notes: {:.1}% of one core",
+            4 * PARTS,
             share * 100.0
+        );
+    }
+
+    /// Real-time cost with every part loaded with effects but silent, as
+    /// parts wait between entries (run with --ignored --nocapture).
+    #[test]
+    #[ignore]
+    fn cost_at_rest() {
+        let (h, mut r) = new(SR);
+        run(&mut r, 0.1);
+        let t = std::time::Instant::now();
+        run(&mut r, 10.0);
+        let bare = t.elapsed().as_secs_f64() / 10.0;
+        for part in 0..PARTS {
+            for (p, v) in [
+                ("fx/ensemble", 0.6),
+                ("fx/chorus_mix", 0.5),
+                ("fx/delay_mix", 0.4),
+            ] {
+                h.set_target(h.part_param_id(part, p).unwrap(), v);
+            }
+            h.note(
+                part,
+                0,
+                NoteEvent::NoteOn {
+                    note: 57,
+                    velocity: 1.0,
+                },
+            );
+            h.note(part, 4800, NoteEvent::NoteOff { note: 57 });
+        }
+        // Let the notes and their echoes die away.
+        run(&mut r, 20.0);
+        let t = std::time::Instant::now();
+        run(&mut r, 10.0);
+        let resting = t.elapsed().as_secs_f64() / 10.0;
+        println!(
+            "engine, {PARTS} parts silent: {:.2}% of one core bare, {:.2}% with effects set",
+            bare * 100.0,
+            resting * 100.0
         );
     }
 

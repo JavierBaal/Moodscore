@@ -62,7 +62,20 @@ pub struct Part {
     scratch: [[f32; SPAN]; 2],
     /// Part gains (left, right, send) last applied, ramped per span.
     gains: Option<[f32; 3]>,
+    /// Frames the part has been silent with no note sounding.
+    quiet: usize,
+    /// At rest: no note sounds and the effects have died away, so nothing
+    /// is computed until the next note (a waiting part costs next to
+    /// nothing).
+    resting: bool,
 }
+
+/// Below this the part's output counts as silence (-120 dB).
+const SILENT: f32 = 1e-6;
+
+/// The shortest silence before a part rests, in seconds (its echoes may
+/// need longer: see `render_span`).
+const REST_AFTER: f32 = 0.5;
 
 impl Part {
     /// Allocates: call before audio starts.
@@ -82,7 +95,14 @@ impl Part {
             fx: Fx::new(sample_rate),
             scratch: [[0.0; SPAN]; 2],
             gains: None,
+            quiet: 0,
+            resting: true,
         }
+    }
+
+    /// True while nothing sounds and the effects have died away.
+    pub fn is_resting(&self) -> bool {
+        self.resting
     }
 
     pub fn patch(&self) -> &[f32] {
@@ -327,6 +347,14 @@ impl Part {
         send_r: &mut [f32],
     ) {
         let n = dry_l.len();
+        let sounding = self.voices.iter().any(|v| v.is_active());
+        let fxp = self.fx_params();
+        if !sounding && self.resting {
+            self.fx.idle(&fxp, n);
+            self.advance_lfos(n);
+            return;
+        }
+        self.resting = false;
         let glide = self.get(P::PartGlide);
         // Glide reaches ~95% of the way in the glide time.
         let glide_coef = if glide > 0.0 {
@@ -349,21 +377,23 @@ impl Part {
         }
 
         let g = |p: P| self.patch[p as usize];
-        let fxp = FxParams {
-            distortion: g(P::Distortion),
-            ensemble: g(P::Ensemble),
-            chorus_mix: g(P::ChorusMix),
-            chorus_rate: g(P::ChorusRate),
-            chorus_depth: g(P::ChorusDepth),
-            delay_mix: g(P::DelayMix),
-            delay_time: params::DIVISION_BEATS
-                [P::DelayDivision.def().sanitize(g(P::DelayDivision)) as usize]
-                / self.quarters_per_second,
-            delay_feedback: g(P::DelayFeedback),
-            delay_width: g(P::DelayWidth),
-            delay_tone: g(P::DelayTone),
-        };
         self.fx.process(&fxp, left, right);
+        // Rest once nothing sounds and the effects are silent for longer
+        // than an echo takes to come back.
+        if sounding {
+            self.quiet = 0;
+        } else {
+            let peak = left
+                .iter()
+                .chain(right.iter())
+                .fold(0.0f32, |m, x| m.max(x.abs()));
+            self.quiet = if peak < SILENT { self.quiet + n } else { 0 };
+            let wait = REST_AFTER.max(1.5 * fxp.delay_time) * self.sr;
+            if self.quiet as f32 >= wait {
+                self.resting = true;
+                self.quiet = 0;
+            }
+        }
 
         let (level, pan, send) = (g(P::PartLevel), g(P::PartPan), g(P::ReverbSend));
         let to = [
@@ -384,7 +414,29 @@ impl Part {
             send_l[i] += l * gs;
             send_r[i] += r * gs;
         }
-        // Free-running LFO phases move on whether or not anything sounds.
+        self.advance_lfos(n);
+    }
+
+    fn fx_params(&self) -> FxParams {
+        let g = |p: P| self.patch[p as usize];
+        FxParams {
+            distortion: g(P::Distortion),
+            ensemble: g(P::Ensemble),
+            chorus_mix: g(P::ChorusMix),
+            chorus_rate: g(P::ChorusRate),
+            chorus_depth: g(P::ChorusDepth),
+            delay_mix: g(P::DelayMix),
+            delay_time: params::DIVISION_BEATS
+                [P::DelayDivision.def().sanitize(g(P::DelayDivision)) as usize]
+                / self.quarters_per_second,
+            delay_feedback: g(P::DelayFeedback),
+            delay_width: g(P::DelayWidth),
+            delay_tone: g(P::DelayTone),
+        }
+    }
+
+    /// Free-running LFO phases move on whether or not anything sounds.
+    fn advance_lfos(&mut self, n: usize) {
         let dt = n as f32 / self.sr;
         for (k, (rate, sync, div)) in [
             (P::Lfo1Rate, P::Lfo1Sync, P::Lfo1Division),

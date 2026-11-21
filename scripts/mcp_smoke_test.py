@@ -248,11 +248,11 @@ check(not err and r.get("modified") and r["params"].get("filter/cutoff") == 900 
       f"patch set changes values ({text[:120]})")
 err, text = call("patch", {"set": {"filter/type": "notch"}})
 check(err and "low_pass" in text, f"bad choice explained: {text[:70]}")
-err, text = call("patch", {"part": 3})
-check(err and "1 or 2" in text, "bad part explained")
+err, text = call("patch", {"part": 5})
+check(err and "1 to 4" in text, "bad part explained")
 st = json.loads(call("get_state", {})[1])
-check(not any(p["path"].startswith("note_") for p in st["params"]) and len(st["notes"]) == 2,
-      "get_state summarises the note parts instead of listing their parameters")
+check(not any(p["path"].startswith("note_") for p in st["params"]) and len(st["notes"]) == 4,
+      "get_state summarises the four note parts instead of listing their parameters")
 err, text = call("play_notes", {"part": 1, "steps": [{"notes": "A3", "beats": 1}, {"notes": "C4 E4", "beats": 1}, {"notes": "rest"}]})
 r = json.loads(text) if not err else {}
 check(not err and r.get("phrase", {}).get("seconds", 0) > 0.5, f"phrase scheduled ({text[:100] if err else r.get('phrase')})")
@@ -272,6 +272,17 @@ r = json.loads(text) if not err else {}
 check(not err and r.get("params", {}).get("filter/cutoff") == 900 and r.get("part") == "note_2", "saved preset loads on part 2")
 err, text = call("play_notes", {"stop": True})
 check(not err, "play_notes stop")
+# Four parts at once: a bass, horns, a pad and a lead.
+for part, preset, phrase in [(1, "moog_bass", "A1:4"), (2, "swell_horn", "A3+C4+E4:4"),
+                             (3, "deep_pad", "E3+A3:4"), (4, "lead", "E5:4")]:
+    call("patch", {"part": part, "preset": preset})
+    call("play_notes", {"part": part, "phrase": phrase})
+time.sleep(0.6)
+st = json.loads(call("get_state", {})[1])
+check([n["sounding"] >= 1 for n in st["notes"]] == [True] * 4 and [n["preset"] for n in st["notes"]]
+      == ["moog_bass", "swell_horn", "deep_pad", "lead"], f"four parts sound at once ({st['notes']})")
+for part in range(1, 5):
+    call("play_notes", {"part": part, "stop": True})
 
 # Bars by number: layers that start together, phrases in short form.
 call("tempo", {"bpm": 120, "meter": "4/4"})

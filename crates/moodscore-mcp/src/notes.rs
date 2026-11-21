@@ -69,9 +69,9 @@ pub fn find_preset(name: &str) -> Result<Preset, String> {
         })
 }
 
-/// "1", "2", "note_1", "note_2" → part index.
+/// "1" to "4", "note_1" to "note_4" → part index.
 pub fn part_index(arg: Option<&Value>) -> Result<usize, String> {
-    let bad = || "part must be 1 or 2 (or \"note_1\", \"note_2\")".to_string();
+    let bad = || format!("part must be 1 to {PARTS} (or \"note_1\" to \"note_{PARTS}\")");
     let n = match arg {
         None | Some(Value::Null) => 1,
         Some(Value::Number(n)) => n.as_u64().ok_or_else(bad)? as usize,

@@ -517,3 +517,41 @@ fn legato_glides_only_between_overlapping_notes() {
     assert!((detached(1.0) - 440.0).abs() < 2.0, "{}", detached(1.0));
     assert!(detached(0.0) < 400.0, "{}", detached(0.0));
 }
+
+#[test]
+fn a_silent_part_rests_after_its_echoes_and_wakes_on_the_next_note() {
+    // A blip echoed every half second (feedback 0.5): it falls below
+    // -120 dB after about ten echoes.
+    let mut p = sine(|p| {
+        p.set(P::AmpDecay, 0.02);
+        p.set(P::AmpSustain, 0.0);
+        p.set(P::DelayMix, 0.8);
+        p.set(P::DelayDivision, 6.0);
+        p.set(P::DelayFeedback, 0.5);
+    });
+    p.set_tempo(2.0);
+    assert!(p.is_resting(), "a part that has played nothing rests");
+    let (l, _) = render_lr(
+        &mut p,
+        &[(0, on(69)), (480, Event::NoteOff { note: 69 })],
+        48_000,
+    );
+    assert!(!p.is_resting() && energy(&l) > 0.0);
+    // Two seconds in, the echoes still come: not resting yet.
+    let (l, _) = render_lr(&mut p, &[], 48_000);
+    assert!(!p.is_resting() && energy(&l) > 0.0);
+    // Once the echoes have died away it rests, and stays silent.
+    let (l, _) = render_lr(&mut p, &[], 20 * 48_000);
+    assert!(p.is_resting());
+    assert!(l[l.len() - 48_000..].iter().all(|s| *s == 0.0));
+    // A new note wakes it on its sample, echoes and all.
+    let (l, _) = render_lr(
+        &mut p,
+        &[(1000, on(69)), (1480, Event::NoteOff { note: 69 })],
+        48_000,
+    );
+    assert!(l[..1000].iter().all(|s| *s == 0.0) && l[1000..1100].iter().any(|s| *s != 0.0));
+    let window = |t: f32| energy(&l[(t * 48_000.0) as usize..(t * 48_000.0) as usize + 2400]);
+    assert!(window(0.52) > 100.0 * window(0.3), "the echo comes back");
+    assert!(!p.is_resting());
+}

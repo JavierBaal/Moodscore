@@ -84,7 +84,7 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 
 ## Note parts ✅ Phase 2
 
-Two note parts, `note_1` and `note_2`, play notes over the drones: plucks, leads, motifs. Each is the same synth (`moodscore-synth`); the patch decides what it is. Notes share the drones' room (reverb), mono bass, master gain and soft clip.
+Four note parts, `note_1` to `note_4`, play notes over the drones: plucks, leads, basses, horns, pads, motifs (an arpeggio, a bass, horns and a lead at once). A part with nothing to play rests and costs next to nothing. Each is the same synth (`moodscore-synth`); the patch decides what it is. Notes share the drones' room (reverb), mono bass, master gain and soft clip.
 
 ### `patch` ✅
 
@@ -94,7 +94,7 @@ Shape a part's sound: load a preset, change parameters, or with neither just des
 { "part": 1, "preset": "pluck", "set": { "filter/cutoff": 900, "mod2/source": "lfo1", "mod2/dest": "voice/pan", "mod2/amount": 0.4 }, "over": 0 }
 ```
 
-- `part`: `1` or `2` (or `"note_1"`, `"note_2"`). Default 1.
+- `part`: `1` to `4` (or `"note_1"` to `"note_4"`). Default 1.
 - `preset`: loaded first; every parameter is set, so earlier tweaks don't linger.
 - `set`: path → value. Numbers, or choices by name. Continuous parameters glide over `over` seconds (default 0); counts and choices switch.
 - Returns the part's `description` (in words), every parameter that differs from the default (`params`, the same shape as a preset file), the `preset` loaded, whether it was `modified` since, and how many notes are `sounding`.

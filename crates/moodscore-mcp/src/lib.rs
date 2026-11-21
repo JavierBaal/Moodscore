@@ -97,8 +97,9 @@ call. Give `over` or `curve` explicitly only when a single move should differ \
 from the pace. `get_state` reports the current pace.
 - You can change your mind at any time: a new instruction starts from wherever \
 the sound is, never with a jump.
-- Two note parts, note_1 and note_2, play notes over the drones: plucks, \
-leads, motifs. Each is a synth you shape: load a preset with `patch` \
+- Four note parts, note_1 to note_4, play notes over the drones: plucks, \
+leads, basses, pads, motifs (an arpeggio, a bass, horns and a lead at once). \
+Each is a synth you shape: load a preset with `patch` \
 (`list_presets` lists them; built in: pluck, lead, moog_bass, swell_horn, \
 glide_arp, deep_pad), adjust it with \
 `patch` set (every parameter is listed with its range in the patch \
@@ -251,7 +252,7 @@ const MAX_CHORDS: usize = 64;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PatchArgs {
-    /// Which note part: 1 or 2. Default 1.
+    /// Which note part: 1 to 4. Default 1.
     pub part: Option<serde_json::Value>,
     /// Load this preset first (see list_presets), e.g. "pluck", "moog_bass" or "deep_pad".
     pub preset: Option<String>,
@@ -266,7 +267,7 @@ pub struct ListPresetsArgs {}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SavePresetArgs {
-    /// Which note part's sound to save: 1 or 2. Default 1.
+    /// Which note part's sound to save: 1 to 4. Default 1.
     pub part: Option<serde_json::Value>,
     /// Name for the preset (letters, digits, spaces, _ or -).
     pub name: String,
@@ -290,7 +291,7 @@ pub struct NoteStep {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PlayNotesArgs {
-    /// Which note part: 1 or 2. Default 1.
+    /// Which note part: 1 to 4. Default 1.
     pub part: Option<serde_json::Value>,
     /// The phrase in short form: tokens like `A3:0.5` (note:beats), `A3+C4+E4:2` (chord), `r:1` (rest), `D5:1@0.9` (velocity), `F#5:1.5~` (held into the next note: slides on a legato patch). A missing length repeats the previous one; `|` bar lines are ignored. E.g. "B3:0.5 D4 G4:1 | C#4:0.5 E4 A4:1". Use this or steps.
     pub phrase: Option<String>,
@@ -315,7 +316,7 @@ type Loaded = [Option<(String, Patch)>; PARTS];
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SequenceArgs {
-    /// Which note part: 1 or 2. Default 1.
+    /// Which note part: 1 to 4. Default 1.
     pub part: Option<serde_json::Value>,
     #[serde(flatten)]
     pub spec: sequencer::SequenceSpec,
@@ -363,7 +364,7 @@ const MAX_ACTIONS: usize = 64;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditionArgs {
-    /// Which note part's current sound: 1 or 2. Default 1.
+    /// Which note part's current sound: 1 to 4. Default 1.
     pub part: Option<serde_json::Value>,
     /// Play a sequence instead of a phrase (the same fields as the sequence tool: arp or motif, range, rate, rhythm…), from the next bar over the harmony and tempo in force.
     pub sequence: Option<sequencer::SequenceSpec>,
