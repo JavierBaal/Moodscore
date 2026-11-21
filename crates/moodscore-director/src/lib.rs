@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use moodscore_engine::{EngineHandle, NoteEvent, NoteMsg, ParamInfo, Scale};
+use moodscore_engine::{EngineHandle, MeterRecord, NoteEvent, NoteMsg, ParamInfo, Scale, PARTS};
 use serde::Serialize;
 
 pub use curve::Curve;
@@ -1274,6 +1274,46 @@ pub struct Conductor {
     heard: Arc<Mutex<Heard>>,
     /// The sections that have played, oldest first, for listening back.
     played: Arc<Mutex<std::collections::VecDeque<Played>>>,
+    /// Who was heard, band by band, over the output kept (10 ms records).
+    levels: Arc<Mutex<std::collections::VecDeque<MeterRecord>>>,
+}
+
+/// Who was heard over a stretch: the mean power, band by band (low, mid,
+/// high: see `moodscore_synth::meter`), of the drones as they enter the
+/// room and of each note part's dry sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Layers {
+    pub drones: [f32; 3],
+    pub parts: [[f32; 3]; PARTS],
+}
+
+impl Layers {
+    /// The records between two engine frames, averaged.
+    fn over(records: &std::collections::VecDeque<MeterRecord>, from: u64, to: u64) -> Option<Self> {
+        let mut l = Layers::default();
+        let mut frames = 0u64;
+        for r in records
+            .iter()
+            .filter(|r| r.end_frame > from && r.end_frame <= to + r.frames as u64 / 2)
+        {
+            frames += r.frames as u64;
+            for (a, e) in l.drones.iter_mut().zip(r.drones) {
+                *a += e;
+            }
+            for (part, energy) in l.parts.iter_mut().zip(r.parts) {
+                for (a, e) in part.iter_mut().zip(energy) {
+                    *a += e;
+                }
+            }
+        }
+        if frames == 0 {
+            return None;
+        }
+        let n = frames as f32;
+        l.drones.iter_mut().for_each(|x| *x /= n);
+        l.parts.iter_mut().flatten().for_each(|x| *x /= n);
+        Some(l)
+    }
 }
 
 /// The output kept for listening back: interleaved stereo, and the engine
@@ -1312,6 +1352,8 @@ pub enum SectionWhen {
         length: f64,
         kept: f64,
         ended_ago: f64,
+        /// Who was heard in it, if the meters have it.
+        layers: Option<Layers>,
     },
 }
 
@@ -1391,17 +1433,23 @@ impl Conductor {
             cues: Arc::new(Mutex::new(None)),
             heard: Arc::new(Mutex::new(Heard::default())),
             played: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            levels: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         let loop_c = c.clone();
         let capture = c.engine.take_capture();
+        let meters = c.engine.take_meters();
         thread::Builder::new()
             .name("moodscore-director".into())
-            .spawn(move || loop_c.run(capture))
+            .spawn(move || loop_c.run(capture, meters))
             .expect("failed to start the director thread");
         c
     }
 
-    fn run(&self, mut capture: Option<rtrb::Consumer<f32>>) {
+    fn run(
+        &self,
+        mut capture: Option<rtrb::Consumer<f32>>,
+        mut meters: Option<rtrb::Consumer<MeterRecord>>,
+    ) {
         let period = Duration::from_secs_f64(1.0 / CONTROL_RATE_HZ as f64);
         let keep = HEARD_SECONDS * self.engine.sample_rate() as usize * 2;
         while self.running.load(Ordering::Relaxed) {
@@ -1422,6 +1470,15 @@ impl Conductor {
                 let extra = heard.samples.len().saturating_sub(keep);
                 // Whole frames only, so left and right stay paired.
                 heard.samples.drain(..extra - extra % 2);
+            }
+            if let Some(m) = &mut meters {
+                let mut levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+                while let Ok(r) = m.pop() {
+                    levels.push_back(r);
+                }
+                // As much as the output kept, and a little more.
+                let extra = levels.len().saturating_sub((HEARD_SECONDS + 1) * 100);
+                levels.drain(..extra);
             }
             let now = self.now();
             {
@@ -1681,14 +1738,32 @@ impl Conductor {
                 }
             }
         }
+        drop(heard);
         let sr = self.engine.sample_rate() as f64;
+        let layers = {
+            let levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+            Layers::over(&levels, from, end_frame)
+        };
         Ok(SectionWhen::Played {
             kept: left.len() as f64 / sr,
             left,
             right,
             length: end - p.start,
             ended_ago: (now - end).max(0.0),
+            layers,
         })
+    }
+
+    /// Who was heard over the last `seconds` of output, band by band.
+    pub fn recent_layers(&self, seconds: f64) -> Option<Layers> {
+        let end = self
+            .heard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .end_frame;
+        let from = end.saturating_sub((seconds.max(0.0) * self.engine.sample_rate() as f64) as u64);
+        let levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+        Layers::over(&levels, from, end)
     }
 
     /// What the cue list is doing, if one runs.

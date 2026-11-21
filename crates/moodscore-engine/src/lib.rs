@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use moodscore_dsp::Dsp;
 pub use moodscore_dsp::{ParamInfo, Scale};
 pub use moodscore_synth::{params as synth_params, Event as NoteEvent};
-use moodscore_synth::{Bus, Part};
+use moodscore_synth::{BandMeter, Bus, Part};
 
 /// Number of note parts.
 pub const PARTS: usize = 4;
@@ -39,6 +39,23 @@ const NOTE_QUEUE: usize = 1024;
 
 /// Seconds of output the capture queue holds before a reader must drain it.
 const CAPTURE_SECONDS: usize = 2;
+
+/// Metering records per second (each one covers about 10 ms).
+const METERS_PER_SECOND: usize = 100;
+
+/// Who is heard, band by band: the energy the drones (as they enter the
+/// room, made room in) and each note part (its dry sound) put out over a
+/// stretch of output, in the bands of [`moodscore_synth::meter`]. Scaled by
+/// the transport fade, so a released stretch reads as silence.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct MeterRecord {
+    /// The engine frame just after the stretch.
+    pub end_frame: u64,
+    pub frames: u32,
+    /// Sum of squares, per band (low, mid, high).
+    pub drones: [f32; 3],
+    pub parts: [[f32; 3]; PARTS],
+}
 
 /// A note event for a part, due at an absolute frame.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -140,6 +157,8 @@ pub struct EngineHandle {
     part_base: [usize; PARTS],
     /// The output, as rendered (interleaved stereo), for whoever listens.
     capture: Arc<Mutex<Option<rtrb::Consumer<f32>>>>,
+    /// Who is heard, band by band, every 10 ms.
+    meters: Arc<Mutex<Option<rtrb::Consumer<MeterRecord>>>>,
 }
 
 impl EngineHandle {
@@ -252,6 +271,12 @@ impl EngineHandle {
             .take()
     }
 
+    /// Take the stream of meter records (who is heard, band by band, every
+    /// 10 ms). Only one reader can have it; drain it often.
+    pub fn take_meters(&self) -> Option<rtrb::Consumer<MeterRecord>> {
+        self.meters.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
     /// The id of a part's parameter, by its path inside the part (`"filter/cutoff"`).
     pub fn part_param_id(&self, part: usize, path: &str) -> Option<usize> {
         let local = synth_params::find(path)?;
@@ -271,6 +296,13 @@ pub struct Renderer {
     frame: u64,
     capture: rtrb::Producer<f32>,
     note_buf: [[f32; CHUNK]; 4],
+    /// The drones as they enter the room (mono), for metering.
+    drone_buf: [f32; CHUNK],
+    drone_meter: BandMeter,
+    /// The meter record being gathered, and where they go.
+    meter: MeterRecord,
+    meter_frames: u32,
+    meters: rtrb::Producer<MeterRecord>,
     shared: Arc<Shared>,
     /// Current (smoothed) value of each parameter, in the smoothing domain:
     /// natural log for log-scale parameters, the plain value otherwise.
@@ -318,6 +350,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
     let params: Arc<[ParamInfo]> = all.into();
     let (producer, consumer) = rtrb::RingBuffer::new(NOTE_QUEUE);
     let (cap_tx, cap_rx) = rtrb::RingBuffer::new(CAPTURE_SECONDS * sample_rate as usize * 2);
+    let (meter_tx, meter_rx) = rtrb::RingBuffer::new(CAPTURE_SECONDS * METERS_PER_SECOND);
 
     let targets: Box<[AtomicU32]> = params
         .iter()
@@ -353,6 +386,11 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         frame: 0,
         capture: cap_tx,
         note_buf: [[0.0; CHUNK]; 4],
+        drone_buf: [0.0; CHUNK],
+        drone_meter: BandMeter::new(sample_rate as f32),
+        meter: MeterRecord::default(),
+        meter_frames: (sample_rate as usize / METERS_PER_SECOND) as u32,
+        meters: meter_tx,
         shared: shared.clone(),
         current,
         log_domain,
@@ -374,6 +412,7 @@ pub fn new(sample_rate: u32) -> (EngineHandle, Renderer) {
         notes: Arc::new(Mutex::new(producer)),
         part_base,
         capture: Arc::new(Mutex::new(Some(cap_rx))),
+        meters: Arc::new(Mutex::new(Some(meter_rx))),
     };
     (handle, renderer)
 }
@@ -430,8 +469,16 @@ impl Renderer {
         self.render_notes(n);
         let [a, b, c, d] = &self.note_buf;
         let (l, r) = (&mut self.left[..n], &mut self.right[..n]);
-        self.dsp
-            .compute_with([&a[..n], &b[..n], &c[..n], &d[..n]], l, r);
+        self.dsp.compute_metered(
+            [&a[..n], &b[..n], &c[..n], &d[..n]],
+            l,
+            r,
+            &mut self.drone_buf[..n],
+        );
+        for &x in &self.drone_buf[..n] {
+            self.drone_meter.feed(x);
+        }
+        let heard = self.fade * self.fade;
 
         let fade_target = Shared::load_f32(&self.shared.fade_target);
         let fade_step = Shared::load_f32(&self.shared.fade_step);
@@ -473,6 +520,28 @@ impl Renderer {
         Shared::store_f32(&self.shared.rms, self.rms_sq.sqrt());
         self.frame += n as u64;
         self.shared.frames.fetch_add(n as u64, Ordering::Relaxed);
+        self.gather_meters(n, heard);
+    }
+
+    /// Add the chunk to the meter record, and send it once it covers its
+    /// 10 ms (dropped if nobody is reading).
+    fn gather_meters(&mut self, n: usize, heard: f32) {
+        let scaled = |e: [f32; 3]| e.map(|x| x * heard);
+        let m = &mut self.meter;
+        for (acc, e) in m.drones.iter_mut().zip(scaled(self.drone_meter.take())) {
+            *acc += e;
+        }
+        for (part, energy) in self.parts.iter_mut().zip(m.parts.iter_mut()) {
+            for (acc, e) in energy.iter_mut().zip(scaled(part.take_meter())) {
+                *acc += e;
+            }
+        }
+        m.frames += n as u32;
+        if m.frames >= self.meter_frames {
+            m.end_frame = self.frame;
+            let _ = self.meters.push(*m);
+            *m = MeterRecord::default();
+        }
     }
 
     /// Run the note parts for the next `n` frames into `note_buf`, playing
@@ -807,6 +876,9 @@ mod tests {
         for preset in moodscore_synth::Preset::factory() {
             let (h, mut r) = new(SR);
             h.fade_to(1.0, 0.05);
+            // The preset's own level over the drones: without the room the
+            // drones make for the notes, which only helps.
+            h.set_target(h.param_id("space/notes_room").unwrap(), 0.0);
             for (id, v) in preset.patch.0.iter().enumerate() {
                 h.set_target(
                     h.part_param_id(0, synth_params::PARAMS[id].path).unwrap(),
@@ -866,6 +938,60 @@ mod tests {
             assert!(peak < 0.9, "{} peaks at {peak}", preset.name);
             assert!(lift > 2.0, "{} barely heard (+{lift:.1} dB)", preset.name);
         }
+    }
+
+    /// The drones make room for a part in its band while it plays, and the
+    /// meters say so: the part's mid band over the drones' mid band.
+    #[test]
+    fn the_drones_make_room_for_the_notes_and_the_meters_say_who_is_heard() {
+        // (drones' mid energy, part's mid energy) over a held chord.
+        let measure = |room: f32| {
+            let (h, mut r) = new(SR);
+            h.fade_to(1.0, 0.05);
+            h.set_target(h.param_id("space/notes_room").unwrap(), room);
+            // All six drones in, the filter open: a full, bright bed.
+            for v in 2..=6 {
+                h.set_target(h.param_id(&format!("drone_{v}/level")).unwrap(), 0.5);
+            }
+            h.set_target(h.param_id("filter/cutoff").unwrap(), 4000.0);
+            let mut meters = h.take_meters().unwrap();
+            run(&mut r, 2.0);
+            for note in [64u8, 67, 71] {
+                h.note(
+                    0,
+                    h.frames_rendered(),
+                    NoteEvent::NoteOn {
+                        note,
+                        velocity: 0.9,
+                    },
+                );
+            }
+            run(&mut r, 1.0);
+            while meters.pop().is_ok() {}
+            run(&mut r, 2.0);
+            let (mut drones, mut part) = (0.0, 0.0);
+            while let Ok(m) = meters.pop() {
+                drones += m.drones[1];
+                part += m.parts[0][1];
+            }
+            (drones, part)
+        };
+        let (bed, part) = measure(0.0);
+        let (made_room, part2) = measure(1.0);
+        let db = |x: f32| 10.0 * x.log10();
+        // The part plays the same either way; the drones dip by about 9 dB
+        // in its band.
+        assert!((db(part2) - db(part)).abs() < 0.5, "{part} {part2}");
+        let dip = db(bed) - db(made_room);
+        assert!((6.0..10.0).contains(&dip), "the drones dip {dip:.1} dB");
+        // Without notes, the bed is exactly what it was.
+        let silent = |room: f32| {
+            let (h, mut r) = new(SR);
+            h.fade_to(1.0, 0.05);
+            h.set_target(h.param_id("space/notes_room").unwrap(), room);
+            run(&mut r, 1.0)
+        };
+        assert_eq!(silent(0.0), silent(1.0));
     }
 
     /// Real-time cost with every part fully loaded (run with --ignored --nocapture).

@@ -22,8 +22,8 @@ fn rms(x: &[f32]) -> f32 {
 }
 
 #[test]
-fn is_stereo() {
-    assert_eq!(NUM_OUTPUTS, 2);
+fn is_stereo_plus_a_meter() {
+    assert_eq!(NUM_OUTPUTS, 3);
 }
 
 #[test]

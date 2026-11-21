@@ -130,8 +130,12 @@ and stereo width, in numbers and words. With a target (list_presets lists \
 them) it says what is on target and how far off the rest is. Shape a sound \
 by auditioning, adjusting with patch, and auditioning again; then let the \
 person judge by ear. `listen` measures the last seconds of the live output \
-(the whole mix). `analyze_file` measures a reference WAV the person has put \
-in their references folder.
+(the whole mix), and says who is heard: each layer's level against the rest \
+in its band (clear, behind, buried). The drones make room for the notes on \
+their own (space/notes_room, 0.5); for a layer behind or buried, raise its \
+part/level (up to 2), give the notes more room (notes_room up to 1), or thin \
+the drones (less density, a lower drone_1 under a bass). `analyze_file` \
+measures a reference WAV the person has put in their references folder.
 - Call `get_state` to see what is moving, how long it has left, and how loud \
 the output is.
 - Talk to the person in musical, sensory terms. Don't recite numbers unless \
@@ -576,6 +580,14 @@ impl MoodscoreServer {
         }
     }
 
+    /// The preset each part last loaded, by name.
+    fn preset_names(&self) -> Vec<Option<String>> {
+        self.loaded()
+            .iter()
+            .map(|l| l.as_ref().map(|(n, _)| n.clone()))
+            .collect()
+    }
+
     fn loaded(&self) -> std::sync::MutexGuard<'_, Loaded> {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -903,7 +915,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something. With section, it measures exactly one section of the sections (the latest time it played, up to 60 s of it), waiting for it to end if it is playing or still to come (up to 45 s a call; if not_yet, call again): no sleeping or counting seconds."
+        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something: layers says, for the drones and each note part, its band and its level against everything else there (clear, behind, buried). With section, it measures exactly one section of the sections (the latest time it played, up to 60 s of it), waiting for it to end if it is playing or still to come (up to 45 s a call; if not_yet, call again): no sleeping or counting seconds."
     )]
     fn listen(&self, Parameters(args): Parameters<ListenArgs>) -> Result<String, String> {
         if let Some(name) = args.section.as_deref() {
@@ -921,10 +933,13 @@ impl MoodscoreServer {
                 args.pitch_range,
                 target.as_ref(),
             )? {
-                ears::SectionHeard::Heard(report, heard) => {
+                ears::SectionHeard::Heard(report, heard, layers) => {
                     let mut v = moodscore_ear::to_json(&report);
                     if let Some(o) = v.as_object_mut() {
                         o.insert("heard".into(), heard);
+                        if let Some(l) = layers {
+                            o.insert("layers".into(), ears::layers_json(&l, &self.preset_names()));
+                        }
                     }
                     v
                 }
@@ -952,7 +967,11 @@ impl MoodscoreServer {
             .map(moodscore_ear::Target::find)
             .transpose()?;
         let report = ears::listen(&self.conductor, seconds, args.pitch_range, target.as_ref())?;
-        Ok(serde_json::to_string_pretty(&moodscore_ear::to_json(&report)).unwrap_or_default())
+        let mut v = moodscore_ear::to_json(&report);
+        if let (Some(o), Some(l)) = (v.as_object_mut(), self.conductor.recent_layers(seconds)) {
+            o.insert("layers".into(), ears::layers_json(&l, &self.preset_names()));
+        }
+        Ok(serde_json::to_string_pretty(&v).unwrap_or_default())
     }
 
     #[tool(

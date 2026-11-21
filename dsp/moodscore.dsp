@@ -14,7 +14,8 @@
 // The note voices (the synth in moodscore-synth) arrive as four inputs: their
 // dry sound (left, right) and what they send to the reverb (left, right).
 // They share the drones' room, mono bass, master gain and soft clip, so
-// notes and drones sound in the same space.
+// notes and drones sound in the same space. While notes play, the drones
+// make room for them in the band they play in.
 //
 // At rest only voice 1 (A1) and a quiet voice 2 (the fifth, E2) sound; the
 // others wait at level 0 on the notes of an A minor chord, ready to enter.
@@ -71,6 +72,7 @@ direct    = hslider("space/direct", 1, 0, 1, 0.001) : from_default(1);
 wet_gain  = hslider("space/wet", 1, 0, 1.5, 0.001) : from_default(1);
 air       = hslider("space/air", 0, 0, 1, 0.001) : si.smoo;
 thin      = hslider("space/thin", 0, 0, 1, 0.001) : si.smoo;
+notes_room = hslider("space/notes_room", 0.5, 0, 1, 0.001) : si.smoo;
 
 master    = hslider("master/gain", 0.5, 0, 1, 0.001) : si.smoo;
 
@@ -137,6 +139,29 @@ body = fi.lowpass(2, 200);
 thinned = _ <: (_, (body : *(thin))) : -;
 near = absorb : thinned : *(direct);
 
+// ---------------------------------------------------------- room for notes
+
+// While notes play, the drones make room for them, as a mixer would: in the
+// band the notes are in (the lows below about 200 Hz, the middle from 200 Hz
+// to 4 kHz) the drones dip, by up to 9 dB times `space/notes_room`. The dip
+// follows how present the notes are in that band (none below -50 dBFS, all
+// of it from -30), slowly (in 0.3 s, back in 1.5 s) so nothing pumps.
+// x - take * band(x): without notes, or at 0, the drones pass exactly as
+// they are.
+low_band = fi.lowpass(2, 200);
+mid_band = _ <: fi.lowpass(2, 4000), fi.lowpass(2, 200) : -;
+presence = an.amp_follower_ar(0.3, 1.5) : max(1e-10) : ba.linear2db
+         : +(50) : /(20) : max(0) : min(1);
+take(p) = 1 - ba.db2linear(-9 * notes_room * p);
+make_room(nl, nr, dl, dr) = duck(dl), duck(dr)
+with {
+    key = (nl + nr) * 0.5;
+    t_low = key : low_band : presence : take;
+    t_mid = key : mid_band : presence : take;
+    duck(x) = x - t_low * (x : low_band) - t_mid * (x : mid_band);
+};
+ducked(dl, dr, nl, nr, sl, sr) = make_room(nl, nr, dl, dr), nl, nr, sl, sr;
+
 // Drones (dl, dr) keep their dry/wet balance; notes add their dry sound and
 // their send. The reverb is linear, so the drones sound exactly as before.
 // Distance acts on everything: the direct sound of drones and notes alike
@@ -164,4 +189,11 @@ safety = ma.tanh;   // soft clip: nothing leaves at more than full scale
 
 drones = bus : filter : spread;
 
-process = (drones, _, _, _, _) : room : mono_bass : (*(master) : safety), (*(master) : safety);
+out = room : mono_bass : (*(master) : safety), (*(master) : safety);
+
+// A third output, for the engine's meters only (it is not heard): the
+// drones as they enter the room, made room in, in mono. Set against what
+// each note part puts out, it says whether a part is heard or buried.
+meter(dl, dr, nl, nr, sl, sr) = (dl + dr) * 0.5;
+
+process = (drones, _, _, _, _) : ducked <: out, meter;

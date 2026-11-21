@@ -275,7 +275,7 @@ params! {
     DelayWidth = "fx/delay_width", 0.0, 1.0, 0.5, Linear, None, "0 echoes in the centre; 1 the right side echoes half a step later, wide";
     DelayTone = "fx/delay_tone", 500.0, 16000.0, 5000.0, Log, HZ, "echoes lose highs above this, each repeat a little darker";
 
-    PartLevel = "part/level", 0.0, 1.0, 0.7, Linear, None, "volume of the whole part";
+    PartLevel = "part/level", 0.0, 2.0, 0.7, Linear, None, "volume of the whole part (0.7 by default; up to 2, +9 dB, to stand out over full drones)";
     PartPan = "part/pan", -1.0, 1.0, 0.0, Linear, None, "position of the whole part";
     ReverbSend = "part/reverb_send", 0.0, 1.0, 0.25, Linear, None, "how much goes into the shared room (the drones' reverb)";
 

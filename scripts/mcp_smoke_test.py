@@ -494,9 +494,15 @@ for preset, target in [("moog_bass", "deep_moog_bass"), ("swell_horn", "swell_ho
     worst = max((abs(x["value"] - x["target"]) / x["tolerance"], x["metric"]) for x in res
                 if not (x["metric"].endswith("correlation") and x["value"] >= 0.999)) if res else (9, "?")
     check(not err and worst[0] <= 0.85, f"{preset} sits inside {target} (worst {worst[1]} at {worst[0]:.2f} of its tolerance)")
+call("play_notes", {"part": 1, "phrase": "A3+C4+E4:8"})
 time.sleep(1.2)
 err, text = call("listen", {"seconds": 1})
 check(not err and "summary" in json.loads(text), f"listen measures the live output ({text[:80]})")
+layers = {l["layer"]: l for l in json.loads(text).get("layers", [])} if not err else {}
+check("drones" in layers and layers.get("note_1", {}).get("preset") == "deep_pad"
+      and layers["note_1"].get("heard") in ("clear", "behind", "buried") and "vs_drones_db" in layers["note_1"],
+      f"listen says who is heard ({list(layers.values())})")
+call("play_notes", {"part": 1, "stop": True})
 err, text = call("analyze_file", {"file": "tone.wav", "pitch_range": [60, 200]})
 r = json.loads(text) if not err else {}
 check(not err and r.get("pitch", {}).get("longest", "").startswith("A2") and abs(r["metrics"]["harmonic_2_db"] + 6) < 1.5,

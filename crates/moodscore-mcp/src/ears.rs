@@ -4,7 +4,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use moodscore_director::sequence::{Pattern, Runner};
-use moodscore_director::{Conductor, Curve, SectionWhen, StartOn, TempoMap};
+use moodscore_director::{Conductor, Curve, Layers, SectionWhen, StartOn, TempoMap};
 use moodscore_ear::{analyze, Audio, NoteSpan, Options, Report, Target};
 use moodscore_engine::{render_part_offline, synth_params::P, NoteEvent};
 
@@ -239,8 +239,8 @@ pub fn listen(
 
 /// What listening to a section came to.
 pub enum SectionHeard {
-    /// Measured, with what was heard.
-    Heard(Box<Report>, serde_json::Value),
+    /// Measured, with what was heard and who was heard in it.
+    Heard(Box<Report>, serde_json::Value, Option<Layers>),
     /// It has not ended yet: waited this long, it ends in so many seconds.
     NotYet { waited: f64, ends_in: f64 },
 }
@@ -257,7 +257,7 @@ pub fn listen_section(
 ) -> Result<SectionHeard, String> {
     let mut waited = 0.0;
     let asked_at = c.now();
-    let (left, right, length, kept, ended_ago) = loop {
+    let (left, right, length, kept, ended_ago, layers) = loop {
         match c.section_to_hear(name, (waited > 0.0).then_some(asked_at))? {
             SectionWhen::Played {
                 left,
@@ -265,7 +265,8 @@ pub fn listen_section(
                 length,
                 kept,
                 ended_ago,
-            } => break (left, right, length, kept, ended_ago),
+                layers,
+            } => break (left, right, length, kept, ended_ago, layers),
             SectionWhen::Ends { in_seconds, .. } => {
                 // A little past its end, for the engine's sound to come back.
                 let wait = in_seconds + 0.15;
@@ -321,7 +322,71 @@ pub fn listen_section(
         )
         .into();
     }
-    Ok(SectionHeard::Heard(Box::new(report), heard))
+    Ok(SectionHeard::Heard(Box::new(report), heard, layers))
+}
+
+/// Who was heard, as a report: each layer playing (the drones, each note
+/// part with sound in it), the band most of it is in, and how loud it is
+/// there, before the room: against everything else together (`vs_rest_db`:
+/// the drones and the other parts) and, for a part, against the drones
+/// alone (`vs_drones_db`). From -6 dB up it is clear, -6 to -12 sits
+/// behind, below -12 is buried (four parts in one band are each about -5
+/// against the other three). `presets` names each part's sound.
+pub fn layers_json(l: &Layers, presets: &[Option<String>]) -> serde_json::Value {
+    use moodscore_synth::meter::BANDS;
+    // Below about -80 dB a layer counts as silent.
+    const SILENT: f64 = 1e-8;
+    let mut sources: Vec<(String, Option<String>, [f64; 3])> =
+        vec![("drones".to_string(), None, l.drones.map(f64::from))];
+    for (i, p) in l.parts.iter().enumerate() {
+        sources.push((
+            format!("note_{}", i + 1),
+            presets.get(i).cloned().flatten(),
+            p.map(f64::from),
+        ));
+    }
+    let db = |x: f64| (100.0 * x.max(1e-12).log10()).round() / 10.0;
+    let mut out = Vec::new();
+    for (k, (name, preset, energy)) in sources.iter().enumerate() {
+        if energy.iter().sum::<f64>() < SILENT {
+            continue;
+        }
+        let band = (0..3).fold(0, |b, i| if energy[i] > energy[b] { i } else { b });
+        let rest: f64 = sources
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .map(|(_, s)| s.2[band])
+            .sum();
+        let mut v = serde_json::json!({
+            "layer": name,
+            "band": BANDS[band],
+            "level_db": db(energy[band]),
+        });
+        if let Some(p) = preset {
+            v["preset"] = p.clone().into();
+        }
+        if rest < SILENT {
+            v["heard"] = "alone".into();
+        } else {
+            let vs = db(energy[band] / rest);
+            v["vs_rest_db"] = vs.into();
+            let drones = sources[0].2[band];
+            if k > 0 && drones >= SILENT {
+                v["vs_drones_db"] = db(energy[band] / drones).into();
+            }
+            v["heard"] = if vs >= -6.0 {
+                "clear"
+            } else if vs >= -12.0 {
+                "behind"
+            } else {
+                "buried"
+            }
+            .into();
+        }
+        out.push(v);
+    }
+    serde_json::Value::Array(out)
 }
 
 /// Wait without holding up the server's other work.

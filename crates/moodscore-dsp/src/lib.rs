@@ -28,8 +28,13 @@ mod generated {
 use faust::{FaustDsp, Meta, ParamIndex, UI};
 use generated::MoodscoreDsp;
 
-/// Number of audio outputs (stereo).
-pub const NUM_OUTPUTS: usize = 2;
+/// Number of outputs: stereo, and the drones as they enter the room (mono,
+/// for metering only).
+pub const NUM_OUTPUTS: usize = 3;
+
+/// Frames [`Dsp::compute_with`] renders at a time when it throws the
+/// metering output away.
+const SCRATCH: usize = 256;
 
 /// Number of audio inputs: the note voices' dry sound (left, right) and
 /// their reverb send (left, right).
@@ -164,12 +169,45 @@ impl Dsp {
         right: &mut [f32],
     ) {
         assert_eq!(left.len(), right.len(), "channel buffers differ in length");
+        let mut drones = [0.0f32; SCRATCH];
+        let n = left.len();
+        let mut start = 0;
+        while start < n {
+            let m = (n - start).min(SCRATCH);
+            let [a, b, c, d] = notes;
+            let r = start..start + m;
+            self.compute_metered(
+                [&a[r.clone()], &b[r.clone()], &c[r.clone()], &d[r.clone()]],
+                &mut left[start..start + m],
+                &mut right[start..start + m],
+                &mut drones[..m],
+            );
+            start += m;
+        }
+    }
+
+    /// As [`compute_with`](Self::compute_with), and also write the drones
+    /// as they enter the room (mono, made room in for the notes) to
+    /// `drones`, for metering. Real-time safe.
+    pub fn compute_metered(
+        &mut self,
+        notes: [&[f32]; NUM_INPUTS],
+        left: &mut [f32],
+        right: &mut [f32],
+        drones: &mut [f32],
+    ) {
+        assert_eq!(left.len(), right.len(), "channel buffers differ in length");
+        assert_eq!(
+            left.len(),
+            drones.len(),
+            "metering buffer differs in length"
+        );
         assert!(
             notes.iter().all(|b| b.len() == left.len()),
             "input length differs"
         );
         let frames = left.len() as i32;
-        let mut outputs: [&mut [f32]; NUM_OUTPUTS] = [left, right];
+        let mut outputs: [&mut [f32]; NUM_OUTPUTS] = [left, right, drones];
         FaustDsp::compute(&mut *self.inner, frames, &notes, &mut outputs);
     }
 }

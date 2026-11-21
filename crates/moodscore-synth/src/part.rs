@@ -68,6 +68,8 @@ pub struct Part {
     /// is computed until the next note (a waiting part costs next to
     /// nothing).
     resting: bool,
+    /// What the part puts out (its dry sound, mono), band by band.
+    meter: crate::meter::BandMeter,
 }
 
 /// Below this the part's output counts as silence (-120 dB).
@@ -97,7 +99,14 @@ impl Part {
             gains: None,
             quiet: 0,
             resting: true,
+            meter: crate::meter::BandMeter::new(sample_rate as f32),
         }
+    }
+
+    /// The energy the part has put out since the last call, in the meter's
+    /// three bands (see [`crate::meter`]).
+    pub fn take_meter(&mut self) -> [f32; 3] {
+        self.meter.take()
     }
 
     /// True while nothing sounds and the effects have died away.
@@ -409,6 +418,7 @@ impl Part {
             let gr = from[1] + (to[1] - from[1]) * k;
             let gs = from[2] + (to[2] - from[2]) * k;
             let (l, r) = (left[i] * gl, right[i] * gr);
+            self.meter.feed(0.5 * (l + r));
             dry_l[i] += l;
             dry_r[i] += r;
             send_l[i] += l * gs;

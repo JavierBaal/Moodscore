@@ -14,12 +14,14 @@
 pub mod dsp;
 pub mod fx;
 pub mod lfo;
+pub mod meter;
 pub mod osc;
 pub mod params;
 pub mod part;
 pub mod preset;
 pub mod voice;
 
+pub use meter::BandMeter;
 pub use params::{Kind, ParamDef, Patch, P, PARAMS};
 pub use part::{Bus, Event, Part, MAX_VOICES};
 pub use preset::Preset;
