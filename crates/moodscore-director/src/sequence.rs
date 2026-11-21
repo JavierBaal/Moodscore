@@ -12,7 +12,10 @@
 //! Motifs are written in degrees or in note names. Degrees follow the
 //! harmony: they count up the scale from the chord's root, and the third,
 //! fifth and seventh are the chord's own (a borrowed major V brings its
-//! leading tone). Note names stay put while the harmony moves under them.
+//! leading tone). On a chord with a bass note (`IV/C#`), 1 is that bass and
+//! 3, 5 and 7 are the chord's tones going up from it, so a motif plays the
+//! inversion: `1+3+5` over A/C# is C# E A. Note names stay put while the
+//! harmony moves under them.
 
 use std::fmt;
 use std::str::FromStr;
@@ -398,6 +401,51 @@ pub fn degree_semitones(chord: &Chord, key: &Key, degree: u8, accidental: i8) ->
     base + 12 * octave
 }
 
+/// Where a motif degree lands on `chord`: the pitch class it counts from
+/// and the semitones above it. On a plain chord that is the root and
+/// [`degree_semitones`]. On a chord with a bass note it is the bass, and
+/// the chord degrees (1, 3, 5, 7) are the chord's tones stacked up from it
+/// (over A/C#: C#, E, A); a degree the stack has not got (a 7 on a triad)
+/// and 2, 4 and 6 come from the key above the bass, and an accidental
+/// counts from the major scale above it.
+pub fn motif_degree(chord: &Chord, key: &Key, degree: u8, accidental: i8) -> (u8, i32) {
+    const MAJOR: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let Some(bass) = chord.bass else {
+        return (chord.root, degree_semitones(chord, key, degree, accidental));
+    };
+    let d = degree.max(1) as i32 - 1;
+    let (octave, class) = (d / 7, (d % 7) as usize);
+    // The chord stacked up from its bass: semitones above it, the bass first.
+    let mut stack: Vec<i32> = chord
+        .intervals
+        .iter()
+        .map(|&i| (chord.root as i32 + i as i32 - bass as i32).rem_euclid(12))
+        .chain([0])
+        .collect();
+    stack.sort_unstable();
+    stack.dedup();
+    let base = if accidental != 0 {
+        MAJOR[class] + accidental as i32
+    } else if class % 2 == 0 && class / 2 < stack.len() {
+        stack[class / 2]
+    } else {
+        let candidates: &[i32] = match class {
+            1 => &[2, 1],
+            2 => &[4, 3],
+            3 => &[5, 6],
+            4 => &[7, 6, 8],
+            5 => &[9, 8],
+            _ => &[10, 11, 9],
+        };
+        candidates
+            .iter()
+            .copied()
+            .find(|&c| key.contains(((bass as i32 + c).rem_euclid(12)) as u8))
+            .unwrap_or(candidates[0])
+    };
+    (bass, base + 12 * octave)
+}
+
 /// Where a motif's degrees count from: the chord's root, as close to
 /// `around` as it goes.
 fn root_near(root_pc: u8, around: u8) -> i32 {
@@ -639,9 +687,9 @@ impl Runner {
                             accidental,
                             octave,
                         } => chord.as_ref().map(|c| {
-                            root_near(c.chord.root, around)
-                                + degree_semitones(&c.chord, &c.key, degree, accidental)
-                                + 12 * octave as i32
+                            let (from, semitones) =
+                                motif_degree(&c.chord, &c.key, degree, accidental);
+                            root_near(from, around) + semitones + 12 * octave as i32
                         }),
                     })
                     .filter(|n| (0..=127).contains(n))
@@ -881,6 +929,37 @@ mod tests {
         assert_eq!(n[24..27], [66, 70, 66]); // Gb4 Bb4 (Eb5 is above the range)
         assert_eq!(n[36..39], [65, 69, 72]); // F4 A4 C5: the borrowed V's leading tone
         assert!(n.iter().all(|&x| (65..=73).contains(&x)));
+    }
+
+    #[test]
+    fn motifs_play_the_inversion_of_a_chord_with_a_bass_note() {
+        let k = key("E", "dorian");
+        let t = tempo(120.0);
+        // The notes of the first `steps` eighths.
+        let notes = |m: &str, around: &str, chord: &str, steps: f64| {
+            let c = at(chord, &k, 0);
+            let mut r = Runner::new(motif(m, around), 0.0, 1);
+            names(&r.fill(steps * 0.25 - 0.01, &t, &|_| Some(c.clone())))
+        };
+        // A/C#: the chord stacked from its bass (C#3 E3 A3).
+        assert_eq!(notes("1+3+5 -", "E3", "IV/C#", 1.0), [49, 52, 57]);
+        // A bass line: C#2 A2 C#3 E2.
+        assert_eq!(notes("1 5 8 3", "E2", "IV/C#", 4.0), [37, 45, 49, 40]);
+        // The same motif over the chord in root position starts on the A
+        // nearest E3 (A3 C#4 E4).
+        assert_eq!(notes("1+3+5 -", "E3", "IV", 1.0), [57, 61, 64]);
+        // 2, 4 and 6 come from the key above the bass; an accidental from
+        // the major scale above it.
+        let c = Chord::parse("IV/C#", &k).unwrap();
+        assert_eq!(motif_degree(&c, &k, 2, 0), (1, 1)); // D, the step above C#
+        assert_eq!(motif_degree(&c, &k, 7, 0), (1, 10));
+        assert_eq!(motif_degree(&c, &k, 7, -1), (1, 10));
+        // A bass outside the chord (D/C) is the 1, and the chord goes on up.
+        let d = Chord::parse("bVII/C", &k).unwrap();
+        assert_eq!(
+            [1, 3, 5, 7].map(|n| motif_degree(&d, &k, n, 0).1),
+            [0, 2, 6, 9]
+        );
     }
 
     #[test]

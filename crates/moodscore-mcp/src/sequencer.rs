@@ -16,9 +16,9 @@ pub struct SequenceSpec {
     pub range: Option<(String, String)>,
     /// Arpeggiate these notes instead of the chord sounding, e.g. "A3 C4 E4": no harmony needed, and they stay put when the harmony moves.
     pub notes: Option<String>,
-    /// A motif, one token per step. Degrees follow the harmony: "1 5 8 5 3 5 b7 5" (1 is the chord's root, 3 5 7 its own third, fifth and seventh, other degrees from the key; b or # alters from the major scale, 8 is the octave, <5 is an octave down, >3 an octave up). Note names stay put while the harmony moves: "F4 r C5 A#4" (upper case: b3 is a degree, B3 a note). r rest, - hold the previous note, ~ after a note ties it into the next (a legato patch slides), @0.9 velocity, + for several at once ("1+5"). Up to 64 steps.
+    /// A motif, one token per step. Degrees follow the harmony: "1 5 8 5 3 5 b7 5" (1 is the chord's root, 3 5 7 its own third, fifth and seventh, other degrees from the key; b or # alters from the major scale, 8 is the octave, <5 is an octave down, >3 an octave up). On a chord with a bass note (IV/C#), 1 is that bass and 3 5 7 the chord's tones going up from it, so the motif plays the inversion: "1+3+5" over A/C# is C# E A. Note names stay put while the harmony moves: "F4 r C5 A#4" (upper case: b3 is a degree, B3 a note). r rest, - hold the previous note, ~ after a note ties it into the next (a legato patch slides), @0.9 velocity, + for several at once ("1+5"). Up to 64 steps.
     pub motif: Option<String>,
-    /// Where a motif's degrees sit: each chord's root goes as close to this note as it can, e.g. "A#1" for a bass line. Default "C4".
+    /// Where a motif's degrees sit: each chord's 1 (its root, or its bass note) goes as close to this note as it can, e.g. "A#1" for a bass line. Default "C4".
     pub around: Option<String>,
     /// Step length: "1/16", "1/8", "1/8t" (triplet), "1/4d" (dotted), "1/4"… Follows the tempo. Default "1/16".
     pub rate: Option<String>,

@@ -343,6 +343,10 @@ r = json.loads(text) if not err else {}
 st = json.loads(call("get_state", {})[1])
 check(not err and r["played"]["chords"] == ["C", "C"] and r["played"]["bpm"] == 96 and st["tempo"]["bpm"] == 240,
       f"a sequence auditioned over chords and a tempo of its own, nothing else touched ({text[:100] if err else r['played']})")
+err, text = call("audition", {"part": 1, "bpm": 100, "bars": 1, "sequence": {"motif": "1 - - -", "around": "E2", "rate": "1/4"},
+                              "harmony": {"key": "E", "mode": "dorian", "progression": [{"chord": "IV/C#", "bars": 1}]}})
+heard = [n["notes"] for n in json.loads(text).get("notes", [])] if not err else text
+check(heard == ["C#2"], f"a motif's 1 is the bass of an inversion (A/C#: {heard})")
 err, text = call("sequence", {"part": 1, "motif": "1 5", "rhythm": "x."})
 check(err and "own rhythm" in text, f"a motif's rhythm explained ({text[:60]})")
 err, text = call("sequence", {"part": 1, "arp": "sideways"})
