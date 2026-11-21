@@ -338,7 +338,8 @@ pub struct SectionArgs {
     pub bars: Option<f64>,
     /// How long it lasts, in seconds (0.5 to 3600), for music without a pulse.
     pub seconds: Option<f64>,
-    /// What happens in it, each as {"<tool>": {the same fields as that tool}} with an optional "after_bars" (or "after_seconds") to happen later in the section, e.g. {"harmony": {"key": "Bb", "progression": [{"chord": "i", "bars": 2}]}}, {"gesture": {"param": "drone_5/level", "to": 0.4, "over_bars": 4}, "after_bars": 4}. Tools: harmony, tempo, morph, gesture, set_pace, patch, sequence, play_notes, start, release. The section says when: leave out start_on, at_bar and start_in.
+    /// What happens in it, each as {"<tool>": {the same fields as that tool}} with an optional "after_bars" (or "after_seconds") to happen later in the section, e.g. {"harmony": {"key": "Bb", "progression": [{"chord": "i", "bars": 2}]}}, {"gesture": {"param": "drone_5/level", "to": 0.4, "over_bars": 4}, "after_bars": 4}. Tools: harmony, tempo, morph, gesture, set_pace, patch, sequence, play_notes, start, release. The section says when: leave out start_on, at_bar and start_in. Default none: the section just lets what is playing go on.
+    #[serde(default)]
     pub actions: Vec<serde_json::Map<String, serde_json::Value>>,
 }
 

@@ -250,8 +250,9 @@ pub fn listen_section(
     target: Option<&Target>,
 ) -> Result<(Report, serde_json::Value), String> {
     let mut waited = 0.0;
+    let asked_at = c.now();
     let (left, right, length, kept, ended_ago) = loop {
-        match c.section_to_hear(name, waited > 0.0)? {
+        match c.section_to_hear(name, (waited > 0.0).then_some(asked_at))? {
             SectionWhen::Played {
                 left,
                 right,

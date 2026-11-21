@@ -429,6 +429,12 @@ check(not err3 and 1.5 < h.get("waited", 0) < 6 and abs(h.get("seconds", 0) - 4.
       f"listen waits for a section playing or to come, then measures it ({h or text3[:100]})")
 err2, text2 = call("sections", {"stop": True})
 check(not err and json.loads(text)["sections"]["loop"] and "sections" not in json.loads(text2), "loop and stop")
+# A tempo change on the way moves the end: listen still gets the whole section.
+call("sections", {"sections": [{"name": "p", "bars": 1, "actions": [{"tempo": {"bpm": 100}}]}, {"name": "q", "bars": 1}]})
+err, text = call("listen", {"section": "q"})
+h = json.loads(text).get("heard", {}) if not err else {}
+check(not err and abs(h.get("seconds", 0) - 2.4) < 0.05, f"listen follows a tempo change on the way ({h or text[:100]})")
+call("tempo", {"bpm": 120})
 call("sequence", {"part": 1, "stop": True, "start_on": "now"})
 call("harmony", {"stop": True})
 call("start", {"over": 0.2})

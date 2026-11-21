@@ -1583,42 +1583,53 @@ impl Conductor {
 
     /// Where the section called `name` stands for listening to it: still
     /// to end (playing, or to come in the list running), or played (the
-    /// latest time), with its sound if it is still kept. With
-    /// `played_only`, the time it last played even if it comes round again
-    /// (after waiting for a looping section to end). An error says which
+    /// latest time), with its sound if it is still kept. Once you have
+    /// waited, pass `asked_at` (the time you first asked): the answer is
+    /// then the first time it played that ended after that, even if it has
+    /// come round again since, and if that has not ended yet (a tempo
+    /// change can move an end), how long to wait more. An error says which
     /// sections there are.
-    pub fn section_to_hear(&self, name: &str, played_only: bool) -> Result<SectionWhen, String> {
+    pub fn section_to_hear(
+        &self,
+        name: &str,
+        asked_at: Option<f64>,
+    ) -> Result<SectionWhen, String> {
         let now = self.now();
-        let names = {
+        let (coming, names) = {
             let cues = self.cues();
             let tempo = self.tempo();
-            if let Some(r) = cues.as_ref() {
-                if let Some((start, end)) = r.next_occurrence(name, &tempo).filter(|_| !played_only)
-                {
-                    return Ok(SectionWhen::Ends {
-                        in_seconds: (end - now).max(0.0),
-                        length: end - start,
-                    });
-                }
-                r.names()
-            } else {
-                Vec::new()
+            match cues.as_ref() {
+                Some(r) => (r.next_occurrence(name, &tempo), r.names()),
+                None => (None, Vec::new()),
             }
+        };
+        let ends = |(start, end): (f64, f64)| SectionWhen::Ends {
+            in_seconds: (end - now).max(0.0),
+            length: end - start,
         };
         let played = self
             .played
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        // Played only: the latest that has ended.
-        let Some(p) = played
-            .iter()
-            .rev()
-            .find(|p| p.name == name && (!played_only || p.end.is_some()))
-        else {
+        let entry = match asked_at {
+            None => {
+                if let Some(c) = coming {
+                    return Ok(ends(c));
+                }
+                played.iter().rev().find(|p| p.name == name)
+            }
+            // The first that ended after the question, or plays now.
+            Some(t) => played
+                .iter()
+                .find(|p| p.name == name && p.end.is_none_or(|(e, _)| e > t)),
+        };
+        let Some(p) = entry else {
+            if let (Some(_), Some(c)) = (asked_at, coming) {
+                return Ok(ends(c));
+            }
             let mut known: Vec<String> = played.iter().map(|p| p.name.clone()).collect();
             known.extend(names);
-            known.dedup();
             let mut seen = std::collections::HashSet::new();
             known.retain(|n| seen.insert(n.clone()));
             return Err(if known.is_empty() {
@@ -1631,9 +1642,10 @@ impl Conductor {
             });
         };
         let Some((end, end_frame)) = p.end else {
-            // Open, yet not in the list running: it is still playing.
+            // Still playing: until the end the list running expects (it is
+            // the section playing), else a moment more.
             return Ok(SectionWhen::Ends {
-                in_seconds: 0.0,
+                in_seconds: coming.map_or(0.25, |(_, e)| (e - now).max(0.0)),
                 length: now - p.start,
             });
         };
