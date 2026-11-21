@@ -720,12 +720,12 @@ fn the_sequencer_sees_the_chords_ahead() {
     );
     // The same chord on the next lap is a new chord.
     assert_ne!(d.chord_at(0.5).unwrap().id, d.chord_at(8.5).unwrap().id);
-    // A new plan waiting for bar 3: until then, the chord sounding now.
+    // A new plan waiting for bar 3: until then, the current one walks on.
     let mut p = plan_in("A", "dorian", &[("i", Length::Bars(1.0))], true);
     p.start_on = StartOn::AtBar(3);
     d.tick(0.5);
     d.harmony(0.5, p, false).unwrap();
-    assert_eq!(d.chord_at(3.0).unwrap().chord.name, "Bbm");
+    assert_eq!(d.chord_at(3.0).unwrap().chord.name, "Gb");
     assert_eq!(d.chord_at(4.1).unwrap().chord.name, "Am");
 }
 
@@ -798,4 +798,93 @@ fn a_sequence_plays_through_the_conductor() {
     assert!(c.sequences_of(0).is_empty());
     c.stop();
     audio.join().unwrap();
+}
+
+// ------------------------------------------------- plans and tempo that wait
+
+#[test]
+fn a_plan_waiting_for_its_bar_lets_the_current_one_walk_on() {
+    let mut d = director();
+    d.set_tempo(0.0, Some(120.0), None, 0.0, Curve::Linear, true)
+        .unwrap();
+    let four = [
+        ("i", Length::Bars(1.0)),
+        ("VI", Length::Bars(1.0)),
+        ("iv", Length::Bars(1.0)),
+        ("V", Length::Bars(1.0)),
+    ];
+    d.harmony(0.0, plan_in("A", "aeolian", &four, true), false)
+        .unwrap();
+    d.tick(0.5);
+    // From bar 4 (6 s): D dorian.
+    let mut p = plan_in("D", "dorian", &[("i", Length::Bars(2.0))], true);
+    p.start_on = StartOn::AtBar(4);
+    d.harmony(0.5, p, false).unwrap();
+    // The A minor plan still walks: bar 2 is VI, bar 3 iv.
+    d.tick(2.5);
+    assert_eq!(d.state(2.5).harmony.unwrap().chord.name, "F");
+    let st = d.state(4.5).harmony.unwrap();
+    assert_eq!(st.chord.name, "Dm");
+    assert!(st
+        .then
+        .as_ref()
+        .is_some_and(|n| n.chord.name == "Dm" && n.starts_in > 1.4));
+    // The sequencer sees the change coming.
+    assert_eq!(d.chord_at(5.9).unwrap().chord.name, "Dm");
+    assert_eq!(d.chord_at(6.1).unwrap().key.mode.to_string(), "dorian");
+    let before = d.chord_at(5.0).unwrap().id;
+    d.tick(6.2);
+    let st = d.state(6.2).harmony.unwrap();
+    assert!(st.key.contains("dorian") && st.then.is_none());
+    assert_ne!(d.chord_at(6.2).unwrap().id, before);
+}
+
+#[test]
+fn tempo_can_wait_for_a_bar() {
+    let mut d = director();
+    d.set_tempo(0.0, Some(120.0), None, 0.0, Curve::Linear, true)
+        .unwrap();
+    // At bar 3 (4 s), 60 BPM: from then a bar lasts 4 s.
+    let at = d
+        .tempo_at(
+            0.1,
+            StartOn::AtBar(3),
+            Some(60.0),
+            None,
+            moodscore_director::tempo::Ramp::Seconds(0.0),
+            Curve::Linear,
+            false,
+        )
+        .unwrap();
+    assert!((at - 4.0).abs() < 1e-9);
+    let st = d.state(0.2).tempo;
+    assert_eq!(st.bpm, 120.0);
+    assert_eq!(st.changes_ahead.len(), 1);
+    assert_eq!(st.changes_ahead[0].bar, 3);
+    assert!((d.tempo().time_of_bar(4) - 8.0).abs() < 1e-9);
+    // A plan in bars, set now, already knows: bar 3's chord lasts 4 s.
+    let two = [("i", Length::Bars(1.0)), ("iv", Length::Bars(1.0))];
+    d.harmony(0.2, plan_in("A", "aeolian", &two, true), false)
+        .unwrap();
+    // i 0.2–2.2, iv 2.2–4.4 (its last fifth of a bar at the new tempo),
+    // then i over a whole slow bar, 4.4–8.4.
+    assert_eq!(d.chord_at(4.3).unwrap().chord.name, "Dm");
+    assert_eq!(d.chord_at(8.3).unwrap().chord.name, "Am");
+    assert_eq!(d.chord_at(8.5).unwrap().chord.name, "Dm");
+    d.tick(5.0);
+    let st = d.state(5.0).tempo;
+    assert_eq!(st.bpm, 60.0);
+    assert!(st.changes_ahead.is_empty());
+    // Bad values are refused, waiting or not.
+    assert!(d
+        .tempo_at(
+            5.0,
+            StartOn::AtBar(5),
+            Some(900.0),
+            None,
+            moodscore_director::tempo::Ramp::Seconds(0.0),
+            Curve::Linear,
+            false
+        )
+        .is_err());
 }

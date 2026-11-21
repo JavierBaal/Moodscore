@@ -89,7 +89,7 @@ tool_list = send("tools/list")["result"]["tools"]
 tools = {t["name"] for t in tool_list}
 check(
     tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state",
-             "patch", "play_notes", "sequence", "list_presets", "save_preset", "audition", "listen",
+             "patch", "play_notes", "sequence", "sections", "list_presets", "save_preset", "audition", "listen",
              "analyze_file"},
     f"tools/list -> {sorted(tools)}",
 )
@@ -338,6 +338,72 @@ call("play_notes", {"part": 2, "stop": True})
 st = json.loads(call("get_state", {})[1])["notes"]
 check(not st[1].get("sequences"), "play_notes stop ends the part's sequence too")
 call("harmony", {"stop": True})
+
+# Tempo that waits for a bar.
+call("tempo", {"bpm": 240, "downbeat": True})
+err, text = call("tempo", {"bpm": 120, "at_bar": 4})
+t = json.loads(text)["tempo"] if not err else {}
+check(not err and t["bpm"] == 240 and t.get("changes_ahead", [{}])[0].get("bar") == 4,
+      f"a tempo change waits for its bar ({t or text[:80]})")
+call("tempo", {"bpm": 240, "downbeat": True})
+
+# Sections: the whole structure in one call, checked before anything sounds.
+bad = {"sections": [
+    {"name": "a", "bars": 1, "actions": [{"morph": {"darkness": 0.5}}]},
+    {"name": "build", "bars": 1, "actions": [{"harmony": {"key": "A", "progression": [{"chord": "xyz", "bars": 1}]}}]}]}
+err, text = call("sections", bad)
+st = json.loads(call("get_state", {})[1])
+check(err and "section 2 (build)" in text and "action 1" in text and "sections" not in st,
+      f"a bad action refuses the whole list ({text[:120]})")
+err, text = call("sections", {"sections": [{"bars": 1, "actions": [{"gesture": {"param": "drone_3/level", "to": 0.3, "start_in": 2}}]}]})
+check(err and "section says when" in text, f"timing inside a section explained ({text[:80]})")
+err, text = call("sections", {"sections": [{"bars": 2, "actions": [{"morph": {"darkness": 0.5}, "after_bars": 2}]}]})
+check(err and "past the end" in text, "an action past its section's end is refused")
+err, text = call("sections", {"sections": [{"bars": 1, "actions": [{"panic": {}}]}]})
+check(err and "can't go in a section" in text, "an unknown tool is refused")
+
+call("start", {"over": 0.2})
+plan = {"sections": [
+    {"name": "a", "bars": 1, "actions": [
+        {"harmony": {"key": "A", "glide": 0.2, "progression": [{"chord": "i", "bars": 1}, {"chord": "iv", "bars": 1}]}},
+        {"patch": {"part": 1, "preset": "glide_arp"}},
+        {"sequence": {"part": 1, "arp": "up", "range": ["A3", "A4"], "rate": "1/8"}}]},
+    {"name": "b", "bars": 1, "actions": [
+        {"tempo": {"bpm": 120}},
+        {"morph": {"darkness": 0.7, "over_bars": 1}},
+        {"gesture": {"param": "drone_3/level", "to": 0.3, "over": 0.5}, "after_bars": 0.5}]},
+    {"name": "c", "bars": 1, "actions": [{"release": {"over_bars": 1}}]}]}
+err, text = call("sections", plan)
+sec = json.loads(text).get("sections", {}) if not err else {}
+check(not err and sec.get("next") == "a" and 0 < sec.get("next_in", 9) <= 1.0 and sec["sections"] == ["a", "b", "c"],
+      f"sections are scheduled ({sec or text[:120]})")
+time.sleep(sec.get("next_in", 1.0) + 0.3)
+st = json.loads(call("get_state", {})[1])
+check(st.get("sections", {}).get("section") == "a" and st["harmony"]["chord"]["name"] == "Am"
+      and st["notes"][0].get("sequences") and st["notes"][0].get("preset") == "glide_arp",
+      f"section a plays its harmony, sound and sequence ({st.get('sections')}, {st['notes'][0]})")
+time.sleep(1.0)
+st = json.loads(call("get_state", {})[1])
+check(st.get("sections", {}).get("section") == "b" and st["tempo"]["bpm"] == 120 and st["harmony"]["chord"]["name"] == "Dm",
+      f"section b changes the tempo on its downbeat ({st.get('sections')}, {st['tempo']})")
+time.sleep(1.4)
+st = json.loads(call("get_state", {})[1])
+lvl = next(p for p in st["params"] if p["path"] == "drone_3/level")
+check(lvl["target"] == 0.3 and not st.get("sections", {}).get("errors"),
+      f"an action after_bars into the section ({lvl}, {st.get('sections')})")
+time.sleep(0.8)
+st = json.loads(call("get_state", {})[1])
+check(st.get("sections", {}).get("section") == "c" and not st["output"]["playing"],
+      f"the last section releases ({st.get('sections')}, {st['output']})")
+time.sleep(2.0)
+st = json.loads(call("get_state", {})[1])
+check("sections" not in st, f"the list is done when its last section ends ({st.get('sections')})")
+err, text = call("sections", {"loop": True, "sections": [{"name": "x", "bars": 2, "actions": [{"set_pace": {"over": 3}}]}]})
+err2, text2 = call("sections", {"stop": True})
+check(not err and json.loads(text)["sections"]["loop"] and "sections" not in json.loads(text2), "loop and stop")
+call("sequence", {"part": 1, "stop": True, "start_on": "now"})
+call("harmony", {"stop": True})
+call("start", {"over": 0.2})
 
 # Ears.
 err, text = call("list_presets", {})

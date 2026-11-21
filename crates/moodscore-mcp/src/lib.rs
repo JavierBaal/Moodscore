@@ -9,14 +9,14 @@
 //! Every tool returns the resulting state as JSON, so the agent never has to
 //! guess what the instrument is doing.
 
+mod actions;
 mod ears;
 mod notes;
 mod sequencer;
 
 use std::sync::{Arc, Mutex};
 
-use moodscore_director::harmony::{parse_note, Chord, Key};
-use moodscore_director::{Conductor, Curve, HarmonyPlan, Length, Meter, StartOn};
+use moodscore_director::{Conductor, Curve, Length, StartOn};
 use moodscore_engine::PARTS;
 use moodscore_synth::{Patch, Preset};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -69,6 +69,15 @@ in the bass (I/C#, IVmaj7/A). With short chords, lower glide so each chord \
 arrives before the next.
 - `release` and `start` accept start_in to delay the fade, e.g. to let an \
 unstable outro peak at full volume before it dies away.
+- When a piece has more than one part (intro, build, climax, outro), lay it \
+out with `sections` in one call: each section lasts some bars and does \
+things at its start (or after_bars into it) with the same tools and fields \
+you'd call directly. The engine plays it on its own, everything on its \
+downbeat, so you never wait between calls and the music carries on if the \
+conversation stops. The whole call is checked before anything sounds. Use \
+over_bars for moves and fades that last a section. To change what's coming, \
+call `sections` again with the sections still to come (at_bar); what is \
+sounding plays on. Watch get_state sections for the section and bar now.
 - If the person sets a general pace (\"everything slow today\", \"short and \
 direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
 call. Give `over` or `curve` explicitly only when a single move should differ \
@@ -132,6 +141,8 @@ pub struct MorphArgs {
     pub instability: Option<f32>,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
+    /// Bars to get there instead of seconds, on the tempo map (a tempo change on the way stretches it).
+    pub over_bars: Option<f64>,
     /// Shape of the movement: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default: the current pace.
     pub curve: Option<String>,
     /// Also take back parameters these macros drive that were set by hand with `gesture`. Default false: hand-set parameters stay where they were put.
@@ -146,6 +157,8 @@ pub struct GestureArgs {
     pub to: f32,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
+    /// Bars to get there instead of seconds, on the tempo map.
+    pub over_bars: Option<f64>,
     /// Shape of the movement: linear, ease_in, ease_out, ease_in_out, exponential or logarithmic. Default: the current pace.
     pub curve: Option<String>,
     /// Seconds to wait before starting. Default 0.
@@ -208,6 +221,10 @@ pub struct TempoArgs {
     pub curve: Option<String>,
     /// Make this moment the downbeat of bar 1. Default false: the bar count carries on.
     pub downbeat: Option<bool>,
+    /// When it happens: "now" (default), "beat" or "bar". A change ahead waits on the tempo map, so the harmony and sequences already follow it.
+    pub start_on: Option<String>,
+    /// Happen on the downbeat of this bar instead (a ritardando from bar 33).
+    pub at_bar: Option<i64>,
 }
 
 const MAX_BARS: f64 = 256.0;
@@ -296,6 +313,36 @@ pub struct SequenceArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SectionArgs {
+    /// What to call it in the reports, e.g. "intro". Default "section N".
+    pub name: Option<String>,
+    /// How long it lasts, in bars of the metre in force when it begins (0.25 to 256). Give bars or seconds.
+    pub bars: Option<f64>,
+    /// How long it lasts, in seconds (0.5 to 3600), for music without a pulse.
+    pub seconds: Option<f64>,
+    /// What happens in it, each as {"<tool>": {the same fields as that tool}} with an optional "after_bars" (or "after_seconds") to happen later in the section, e.g. {"harmony": {"key": "Bb", "progression": [{"chord": "i", "bars": 2}]}}, {"gesture": {"param": "drone_5/level", "to": 0.4, "over_bars": 4}, "after_bars": 4}. Tools: harmony, tempo, morph, gesture, set_pace, patch, sequence, play_notes, start, release. The section says when: leave out start_on, at_bar and start_in.
+    pub actions: Vec<serde_json::Map<String, serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SectionsArgs {
+    /// The sections, in order: each begins where the one before ends.
+    pub sections: Option<Vec<SectionArgs>>,
+    /// When the first begins: "bar" (the next downbeat, default), "beat" or "now".
+    pub start_on: Option<String>,
+    /// The first begins on the downbeat of this bar instead.
+    pub at_bar: Option<i64>,
+    /// Start again from the first when the last ends. Default false: the last section's sound stays (unless it releases).
+    #[serde(rename = "loop")]
+    pub looping: Option<bool>,
+    /// Stop the sections: nothing more of them happens, and what they set going plays on. Other fields are ignored.
+    pub stop: Option<bool>,
+}
+
+const MAX_SECTIONS: usize = 64;
+const MAX_ACTIONS: usize = 64;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditionArgs {
     /// Which note part's current sound: 1 or 2. Default 1.
     pub part: Option<serde_json::Value>,
@@ -355,6 +402,8 @@ pub struct SetPaceArgs {
 pub struct StartArgs {
     /// Seconds to fade in. Default 3.
     pub over: Option<f32>,
+    /// Bars to fade in instead of seconds.
+    pub over_bars: Option<f64>,
     /// Seconds to wait before the fade begins. Default 0.
     pub start_in: Option<f32>,
     /// Begin the fade on the downbeat of this bar instead (see get_state tempo.bar).
@@ -365,6 +414,8 @@ pub struct StartArgs {
 pub struct ReleaseArgs {
     /// Seconds to fade out to silence. Default 8. Use 1 or less only for an urgent stop.
     pub over: Option<f32>,
+    /// Bars to fade out instead of seconds (an ending timed to the music).
+    pub over_bars: Option<f64>,
     /// Seconds to wait before the fade begins, e.g. to let a gesture peak at full volume first. Default 0.
     pub start_in: Option<f32>,
     /// Begin the fade on the downbeat of this bar instead (see get_state tempo.bar).
@@ -440,6 +491,9 @@ struct Report {
     output: Output,
     /// The note parts.
     notes: Vec<notes::PartStatus>,
+    /// The sections running, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sections: Option<moodscore_director::cues::CueState>,
     #[serde(flatten)]
     state: moodscore_director::State,
 }
@@ -483,6 +537,21 @@ impl MoodscoreServer {
         self.loaded.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Where actions are prepared for a tool call (or a section).
+    fn ctx(&self, in_section: bool) -> actions::Ctx<'_> {
+        actions::Ctx {
+            c: &self.conductor,
+            loaded: self.loaded.clone(),
+            in_section,
+        }
+    }
+
+    /// Do a prepared action now, landing where its own fields say.
+    fn act(&self, a: &actions::Action) -> Result<(), String> {
+        let now = self.conductor.now();
+        (a.run)(&self.conductor, now, a.own)
+    }
+
     fn part_json(&self, part: usize) -> serde_json::Value {
         let loaded = self.loaded()[part].clone();
         serde_json::to_value(notes::report(&self.conductor, part, &loaded))
@@ -509,6 +578,7 @@ impl MoodscoreServer {
                     .map(|p| notes::status(&self.conductor, p, &loaded[p]))
                     .collect()
             },
+            sections: self.conductor.cue_state(),
             state: self.conductor.state(),
         };
         // Through text rather than to_value: f32s keep their short form
@@ -532,9 +602,8 @@ impl MoodscoreServer {
         description = "Start sounding: fade in from silence. Moodscore starts silent; call this when the person wants to hear it. After a release, brings the sound back exactly as it was. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn start(&self, Parameters(args): Parameters<StartArgs>) -> Result<String, String> {
-        let wait = wait_for(&self.conductor, args.start_in, args.at_bar)?;
-        let (over, start_in) = check_fade(args.over.unwrap_or(DEFAULT_START), wait)?;
-        self.conductor.fade(1.0, over, start_in);
+        let a = actions::prepare_fade(&self.ctx(false), args.into(), 1.0)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
@@ -542,9 +611,8 @@ impl MoodscoreServer {
         description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
-        let wait = wait_for(&self.conductor, args.start_in, args.at_bar)?;
-        let (over, start_in) = check_fade(args.over.unwrap_or(DEFAULT_RELEASE), wait)?;
-        self.conductor.fade(0.0, over, start_in);
+        let a = actions::prepare_fade(&self.ctx(false), args.into(), 0.0)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
@@ -552,19 +620,8 @@ impl MoodscoreServer {
         description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Parameters set by hand with gesture are left alone unless reclaim is true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn morph(&self, Parameters(args): Parameters<MorphArgs>) -> Result<String, String> {
-        let mut changes = Vec::new();
-        if let Some(v) = args.darkness {
-            changes.push(("darkness", v));
-        }
-        if let Some(v) = args.instability {
-            changes.push(("instability", v));
-        }
-        let pace = self.conductor.pace();
-        let over = args.over.unwrap_or(pace.over);
-        let curve = curve_or(args.curve.as_deref(), pace.curve)?;
-        self.conductor
-            .morph(&changes, over, curve, args.reclaim.unwrap_or(false))
-            .map_err(|e| e.to_string())?;
+        let a = actions::prepare_morph(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
@@ -572,13 +629,8 @@ impl MoodscoreServer {
         description = "Move a single sound parameter along a trajectory, for when a mood macro is too coarse (for example bringing in a voice with drone_3/level, or retuning it with drone_3/pitch). Takes that parameter out of macro control: later morphs leave it alone unless they pass reclaim: true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn gesture(&self, Parameters(args): Parameters<GestureArgs>) -> Result<String, String> {
-        let pace = self.conductor.pace();
-        let over = args.over.unwrap_or(pace.over);
-        let curve = curve_or(args.curve.as_deref(), pace.curve)?;
-        let start_in = args.start_in.unwrap_or(0.0);
-        self.conductor
-            .gesture(&args.param, args.to, over, curve, start_in)
-            .map_err(|e| e.to_string())?;
+        let a = actions::prepare_gesture(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
@@ -586,106 +638,17 @@ impl MoodscoreServer {
         description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A slash puts a note in the bass: I/C#, IVmaj7/A (it wins over a pedal for that chord). A new plan starts from its first chord now (or on the next beat or downbeat with start_on, or on a given bar with at_bar), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
     )]
     fn harmony(&self, Parameters(args): Parameters<HarmonyArgs>) -> Result<String, String> {
-        if args.stop.unwrap_or(false) {
-            self.conductor.stop_harmony();
-            return Ok(self.report(Detail::Brief));
-        }
-        let key_name = args
-            .key
-            .ok_or("harmony needs a key (e.g. \"A\"), or stop: true")?;
-        let key = Key::new(&key_name, args.mode.as_deref().unwrap_or("aeolian"))
-            .map_err(|e| e.to_string())?;
-        let steps = args
-            .progression
-            .filter(|p| !p.is_empty())
-            .ok_or("harmony needs a progression with at least one chord")?;
-        if steps.len() > MAX_CHORDS {
-            return Err(format!(
-                "a progression can have at most {MAX_CHORDS} chords"
-            ));
-        }
-        let mut progression = Vec::with_capacity(steps.len());
-        for (i, step) in steps.iter().enumerate() {
-            let chord =
-                Chord::parse(&step.chord, &key).map_err(|e| format!("chord {}: {e}", i + 1))?;
-            let length =
-                chord_length(step).map_err(|e| format!("chord {} ({}): {e}", i + 1, step.chord))?;
-            progression.push((chord, length));
-        }
-        let pedal = args
-            .pedal
-            .as_deref()
-            .filter(|p| !p.trim().is_empty())
-            .map(parse_note)
-            .transpose()
-            .map_err(|e| format!("pedal: {e}"))?;
-        if let Some(midi) = pedal.and_then(|p| p.midi) {
-            let (lo, hi) = moodscore_director::harmony::BASS_RANGE;
-            if !(lo..=hi).contains(&(midi as f32)) {
-                return Err("pedal: give the note without an octave, or between E1 and E2".into());
-            }
-        }
-        let glide = args.glide.unwrap_or(DEFAULT_GLIDE);
-        if !glide.is_finite() || !(0.0..=600.0).contains(&glide) {
-            return Err("glide must be between 0 and 600 seconds".into());
-        }
-        let curve = curve_or(args.curve.as_deref(), Curve::EaseInOut)?;
-        let start_on = start_on(args.start_on.as_deref(), args.at_bar)?;
-        let plan = HarmonyPlan {
-            key,
-            progression,
-            looping: args.looping.unwrap_or(true),
-            pedal,
-            glide,
-            curve,
-            start_on,
-        };
-        self.conductor
-            .harmony(plan, args.reclaim.unwrap_or(false))
-            .map_err(|e| e.to_string())?;
+        let a = actions::prepare_harmony(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
     #[tool(
-        description = "Set the musical clock: tempo (bpm) and metre, at once or gliding over time (accelerando, ritardando). Chords given in bars or beats follow it. The bar count carries on through changes unless downbeat is true; a new metre starts a new bar. Returns the output, pace, tempo (bpm, metre, bar and beat now, any ramp under way), harmony and macros."
+        description = "Set the musical clock: tempo (bpm) and metre, at once or gliding over time (accelerando, ritardando), now or from a given bar (at_bar, start_on: a change ahead waits on the tempo map, so the harmony and sequences already follow it). Chords given in bars or beats follow it. The bar count carries on through changes unless downbeat is true; a new metre starts a new bar. Returns the output, pace, tempo (bpm, metre, bar and beat now, any ramp under way), harmony and macros."
     )]
     fn tempo(&self, Parameters(args): Parameters<TempoArgs>) -> Result<String, String> {
-        let meter: Option<Meter> = args
-            .meter
-            .as_deref()
-            .filter(|m| !m.trim().is_empty())
-            .map(str::parse)
-            .transpose()?;
-        let curve = curve_or(args.curve.as_deref(), Curve::Linear)?;
-        let ramp = match (args.over, args.over_bars) {
-            (Some(_), Some(_)) => return Err("give over or over_bars, not both".into()),
-            (Some(s), None) => s,
-            (None, Some(bars)) => {
-                if !bars.is_finite() || !(0.0..=MAX_BARS).contains(&bars) {
-                    return Err(format!("over_bars must be between 0 and {MAX_BARS}"));
-                }
-                match args.bpm {
-                    None => 0.0,
-                    Some(bpm) => {
-                        let m = meter.unwrap_or(self.conductor.tempo().meter());
-                        self.conductor.tempo().ramp_seconds_for(
-                            self.conductor.now(),
-                            bpm,
-                            Some(m),
-                            bars * m.quarters_per_bar(),
-                            curve,
-                        )
-                    }
-                }
-            }
-            (None, None) => 0.0,
-        };
-        if args.bpm.is_none() && meter.is_none() && !args.downbeat.unwrap_or(false) {
-            return Err("tempo needs a bpm, a meter or downbeat: true".into());
-        }
-        self.conductor
-            .set_tempo(args.bpm, meter, ramp, curve, args.downbeat.unwrap_or(false))
-            .map_err(|e| e.to_string())?;
+        let a = actions::prepare_tempo(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 
@@ -694,37 +657,8 @@ impl MoodscoreServer {
     )]
     fn patch(&self, Parameters(args): Parameters<PatchArgs>) -> Result<String, String> {
         let part = notes::part_index(args.part.as_ref())?;
-        let over = args.over.unwrap_or(0.0);
-        if !over.is_finite() || !(0.0..=600.0).contains(&over) {
-            return Err("over must be between 0 and 600 seconds".into());
-        }
-        let set = match &args.set {
-            Some(m) => notes::parse_set(m)?,
-            None => Vec::new(),
-        };
-        let preset = args
-            .preset
-            .as_deref()
-            .filter(|p| !p.trim().is_empty())
-            .map(notes::find_preset)
-            .transpose()?;
-        if let Some(p) = &preset {
-            // Every parameter, so earlier tweaks don't linger.
-            let all: Vec<(String, f32)> = moodscore_engine::synth_params::PARAMS
-                .iter()
-                .zip(&p.patch.0)
-                .map(|(d, &v)| (d.path.to_string(), v))
-                .collect();
-            self.conductor
-                .set_params(&notes::to_changes(part, &all), 0.0)
-                .map_err(|e| e.to_string())?;
-            self.loaded()[part] = Some((p.name.clone(), p.patch.clone()));
-        }
-        if !set.is_empty() {
-            self.conductor
-                .set_params(&notes::to_changes(part, &set), over)
-                .map_err(|e| e.to_string())?;
-        }
+        let a = actions::prepare_patch(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(serde_json::to_string_pretty(&self.part_json(part)).unwrap_or_default())
     }
 
@@ -911,96 +845,25 @@ impl MoodscoreServer {
     )]
     fn play_notes(&self, Parameters(args): Parameters<PlayNotesArgs>) -> Result<String, String> {
         let part = notes::part_index(args.part.as_ref())?;
-        if args.stop.unwrap_or(false) {
-            self.conductor.stop_notes(part);
+        let stop = args.stop.unwrap_or(false);
+        let mut a = actions::prepare_notes(&self.ctx(false), args)?;
+        if stop {
+            self.act(&a)?;
             return Ok(self.report(Detail::Brief));
         }
-        let repeat = args.repeat.unwrap_or(1);
-        if !(1..=MAX_REPEAT).contains(&repeat) {
-            return Err(format!("repeat must be between 1 and {MAX_REPEAT}"));
-        }
-        let velocity = args.velocity.unwrap_or(0.8);
-        let gate = args.gate.unwrap_or(0.9);
-        let check = |velocity: f32, gate: f32, beats: f32| -> Result<(), String> {
-            if !beats.is_finite() || !(0.0625..=64.0).contains(&beats) {
-                return Err("beats must be between 1/16 and 64".into());
-            }
-            if !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
-                return Err("velocity must be between 0 and 1".into());
-            }
-            if !gate.is_finite() || !(0.05..=2.0).contains(&gate) {
-                return Err("gate must be between 0.05 and 2".into());
-            }
-            Ok(())
-        };
-        check(velocity, gate, 1.0)?;
-        let steps: Vec<notes::Step> = match (args.phrase.as_deref(), &args.steps) {
-            (Some(_), Some(s)) if !s.is_empty() => {
-                return Err("give phrase or steps, not both".into())
-            }
-            (Some(p), _) if !p.trim().is_empty() => {
-                let steps = notes::parse_phrase(p, velocity, gate)?;
-                for (i, s) in steps.iter().enumerate() {
-                    check(s.velocity, s.gate, s.beats)
-                        .map_err(|e| format!("token {}: {e}", i + 1))?;
-                }
-                steps
-            }
-            (_, Some(raw)) if !raw.is_empty() => {
-                let mut steps = Vec::with_capacity(raw.len());
-                for (i, s) in raw.iter().enumerate() {
-                    let at = |e: String| format!("step {} ({}): {e}", i + 1, s.notes);
-                    let beats = s.beats.unwrap_or(1.0);
-                    let (v, g) = (s.velocity.unwrap_or(velocity), s.gate.unwrap_or(gate));
-                    check(v, g, beats).map_err(at)?;
-                    let notes = notes::parse_notes(&s.notes).map_err(at)?;
-                    if notes.len() > 8 {
-                        return Err(at("at most 8 notes at once".into()));
-                    }
-                    steps.push(notes::Step {
-                        notes,
-                        beats,
-                        velocity: v,
-                        gate: g,
-                    });
-                }
-                steps
-            }
-            _ => {
-                return Err(
-                    "play_notes needs a phrase, e.g. \"A3:1 C4 E4:2\", or steps, or stop: true"
-                        .into(),
-                )
-            }
-        };
-        if steps.len() > MAX_STEPS {
-            return Err(format!("a phrase can have at most {MAX_STEPS} steps"));
-        }
-        let tempo = self.conductor.tempo();
+        // Fix the start first, so the report says exactly when it plays.
         let now = self.conductor.now();
         let start = self
             .conductor
-            .start_time(start_on(args.start_on.as_deref(), args.at_bar)?)
+            .start_time(a.own)
             .map_err(|e| e.to_string())?;
-        let events = notes::schedule(&tempo, start, &steps, repeat);
-        if events.len() > MAX_EVENTS {
-            return Err(format!(
-                "that is {} note events; at most {MAX_EVENTS} per call (shorten the phrase or repeat less)",
-                events.len()
-            ));
-        }
-        self.conductor
-            .schedule_notes(part, &events)
-            .map_err(|e| e.to_string())?;
+        a.own = StartOn::AtTime(start);
+        self.act(&a)?;
         let mut value: serde_json::Value =
             serde_json::from_str(&self.report(Detail::Brief)).unwrap_or_default();
         if let Some(obj) = value.as_object_mut() {
-            let total: f64 = steps
-                .iter()
-                .map(|s| s.beats as f64 * tempo.meter().quarters_per_beat())
-                .sum::<f64>()
-                * repeat as f64;
-            let end = tempo.time_at(tempo.beat_at(start) + total);
+            let tempo = self.conductor.tempo();
+            let end = tempo.time_at(tempo.beat_at(start) + a.quarters.unwrap_or(0.0));
             obj.insert(
                 "phrase".into(),
                 serde_json::json!({
@@ -1018,27 +881,18 @@ impl MoodscoreServer {
     )]
     fn sequence(&self, Parameters(args): Parameters<SequenceArgs>) -> Result<String, String> {
         let part = notes::part_index(args.part.as_ref())?;
-        let on = start_on_bar(args.start_on.as_deref(), args.at_bar)?;
-        if args.stop.unwrap_or(false) {
-            self.conductor
-                .stop_sequence(part, on)
-                .map_err(|e| e.to_string())?;
+        let stop = args.stop.unwrap_or(false);
+        let a = actions::prepare_sequence(&self.ctx(false), args)?;
+        self.act(&a)?;
+        if stop {
             return Ok(self.report(Detail::Brief));
         }
-        let bars = args.bars;
-        if let Some(b) = bars {
-            if !b.is_finite() || !(0.25..=MAX_BARS).contains(&b) {
-                return Err(format!("bars must be between 0.25 and {MAX_BARS}"));
-            }
-        }
-        let (pattern, plays) = args.spec.pattern()?;
-        let state = self
-            .conductor
-            .sequence(part, pattern, plays, on, bars)
-            .map_err(|e| e.to_string())?;
         let mut value: serde_json::Value =
             serde_json::from_str(&self.report(Detail::Brief)).unwrap_or_default();
-        if let Some(obj) = value.as_object_mut() {
+        if let (Some(obj), Some(state)) = (
+            value.as_object_mut(),
+            self.conductor.sequences_of(part).pop(),
+        ) {
             let mut seq = serde_json::to_value(&state).unwrap_or_default();
             seq["part"] = serde_json::json!(moodscore_engine::part_prefix(part));
             obj.insert("sequence".into(), seq);
@@ -1047,19 +901,114 @@ impl MoodscoreServer {
     }
 
     #[tool(
+        description = "Lay out the piece as sections the engine plays on its own, one after another: each section lasts some bars (or seconds) and does things at its start or after_bars into it, with the same tools and fields you use directly (harmony, tempo, morph, gesture, set_pace, patch, sequence, play_notes, start, release). One call is the whole structure: no waiting between calls, and if the conversation stops the music carries on. The whole call is checked before anything sounds: if one action is wrong, nothing is scheduled and the error names the section and action. Everything lands on its beat: harmony, tempo changes, sequences and phrases are set up a little ahead so they start exactly on the section's downbeat. Use over_bars for moves and fades that last a section. A new call replaces what has not happened yet (what is sounding plays on until a new section changes it): to change the rest of a piece, send the sections still to come with at_bar. loop repeats the list; stop: true ends it. get_state shows the section playing, its bar, the next and when, and any action that failed. Returns the brief report with sections."
+    )]
+    fn sections(&self, Parameters(args): Parameters<SectionsArgs>) -> Result<String, String> {
+        use moodscore_director::cues::{CueAction, CueList, CueSection, Span};
+        if args.stop.unwrap_or(false) {
+            self.conductor.stop_cues();
+            return Ok(self.report(Detail::Brief));
+        }
+        let on = start_on_bar(args.start_on.as_deref(), args.at_bar)?;
+        let given = args
+            .sections
+            .filter(|s| !s.is_empty())
+            .ok_or("sections needs at least one section, or stop: true")?;
+        if given.len() > MAX_SECTIONS {
+            return Err(format!("at most {MAX_SECTIONS} sections"));
+        }
+        let ctx = self.ctx(true);
+        let mut list = CueList {
+            sections: Vec::with_capacity(given.len()),
+            looping: args.looping.unwrap_or(false),
+        };
+        for (i, sec) in given.into_iter().enumerate() {
+            let name = sec
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| format!("section {}", i + 1));
+            let here = |e: String| format!("section {} ({name}): {e}", i + 1);
+            let length = match (sec.bars, sec.seconds) {
+                (Some(_), Some(_)) => return Err(here("give bars or seconds, not both".into())),
+                (Some(b), None) if b.is_finite() && (0.25..=MAX_BARS).contains(&b) => Span::Bars(b),
+                (Some(_), None) => {
+                    return Err(here(format!("bars must be between 0.25 and {MAX_BARS}")))
+                }
+                (None, Some(s)) if s.is_finite() && (0.5..=3600.0).contains(&s) => Span::Seconds(s),
+                (None, Some(_)) => return Err(here("seconds must be between 0.5 and 3600".into())),
+                (None, None) => return Err(here("give its length in bars (or seconds)".into())),
+            };
+            if sec.actions.len() > MAX_ACTIONS {
+                return Err(here(format!("at most {MAX_ACTIONS} actions")));
+            }
+            let mut acts = Vec::with_capacity(sec.actions.len());
+            for (j, raw) in sec.actions.into_iter().enumerate() {
+                let at = |e: String| here(format!("action {}: {e}", j + 1));
+                let mut after = Span::Bars(0.0);
+                let mut tool = None;
+                for (k, v) in raw {
+                    match k.as_str() {
+                        "after_bars" | "after_seconds" => {
+                            let x = v
+                                .as_f64()
+                                .filter(|x| x.is_finite() && *x >= 0.0)
+                                .ok_or_else(|| {
+                                    at(format!(
+                                        "{k} must be a number of {} from 0",
+                                        if k == "after_bars" { "bars" } else { "seconds" }
+                                    ))
+                                })?;
+                            let span = if k == "after_bars" {
+                                Span::Bars(x)
+                            } else {
+                                Span::Seconds(x)
+                            };
+                            let past = match (span, length) {
+                                (Span::Bars(a), Span::Bars(l)) => a >= l,
+                                (Span::Seconds(a), Span::Seconds(l)) => a >= l,
+                                _ => false,
+                            };
+                            if past {
+                                return Err(at(format!("{k} {x} is past the end of the section")));
+                            }
+                            after = span;
+                        }
+                        _ if tool.is_some() => {
+                            return Err(at(
+                                "one tool per action (give each its own {\"tool\": {...}})".into(),
+                            ))
+                        }
+                        _ => tool = Some((k, v)),
+                    }
+                }
+                let (name_of_tool, args) =
+                    tool.ok_or_else(|| at("give the tool, e.g. {\"harmony\": {...}}".into()))?;
+                let a = actions::prepare(&ctx, &name_of_tool, args).map_err(at)?;
+                acts.push(CueAction {
+                    what: a.what,
+                    lead: a.kind.lead(),
+                    order: a.kind.order(),
+                    after,
+                    run: a.run,
+                });
+            }
+            list.sections.push(CueSection {
+                name,
+                length,
+                actions: acts,
+            });
+        }
+        self.conductor.cue(list, on).map_err(|e| e.to_string())?;
+        Ok(self.report(Detail::Brief))
+    }
+
+    #[tool(
         description = "Set the standing pace: the default duration and curve for every morph and gesture that doesn't give its own. Use it when the person sets a general feel for transitions (\"everything slow today\", \"short and direct\"). Moves already under way keep their timing. Fades from start and release keep their own defaults. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn set_pace(&self, Parameters(args): Parameters<SetPaceArgs>) -> Result<String, String> {
-        self.conductor
-            .set_pace(
-                args.over,
-                args.curve
-                    .as_deref()
-                    .filter(|c| !c.trim().is_empty())
-                    .map(str::parse)
-                    .transpose()?,
-            )
-            .map_err(|e| e.to_string())?;
+        let a = actions::prepare_pace(&self.ctx(false), args)?;
+        self.act(&a)?;
         Ok(self.report(Detail::Brief))
     }
 

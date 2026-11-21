@@ -21,6 +21,7 @@
 //! [`Director`] is pure (time is passed in), which makes it easy to test.
 //! [`Conductor`] runs it on a control thread against a live engine.
 
+pub mod cues;
 pub mod curve;
 pub mod harmony;
 pub mod mapping;
@@ -268,6 +269,8 @@ pub struct Director {
     /// Parameter ids of each voice's pitch: drone_1/pitch, drone_2/pitch, …
     voice_pitches: Vec<usize>,
     harmony: Option<HarmonyRun>,
+    /// A plan waiting for its first beat while `harmony` walks on.
+    next_harmony: Option<HarmonyRun>,
     /// Counts harmonic plans, so a new plan's chords are new chords.
     plans: u64,
     /// The chord last voiced, for the sequencer when no plan is walking.
@@ -286,7 +289,7 @@ pub enum Length {
 }
 
 /// Where a new plan's first chord lands.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub enum StartOn {
     /// Right away.
     #[default]
@@ -297,6 +300,12 @@ pub enum StartOn {
     Bar,
     /// On the downbeat of this bar (it must not have passed).
     AtBar(i64),
+    /// At this quarter-note position on the tempo map (see
+    /// [`TempoMap::beat_at`]); it must not have passed. What a cue list
+    /// uses: beats never move, whatever the tempo does meanwhile.
+    AtQuarter(f64),
+    /// At this time on the director's clock (it must not have passed).
+    AtTime(f64),
 }
 
 /// A harmonic plan: a key and a progression the director walks through.
@@ -319,6 +328,8 @@ pub struct HarmonyPlan {
 #[derive(Clone, Debug)]
 struct HarmonyRun {
     plan: HarmonyPlan,
+    /// Which plan this is, so its chords are told apart from another's.
+    serial: u64,
     /// When the first chord lands.
     starts_at: f64,
     step: usize,
@@ -423,6 +434,7 @@ impl Director {
             pace: Pace::default(),
             voice_pitches: Vec::new(),
             harmony: None,
+            next_harmony: None,
             plans: 0,
             sounding: None,
             tempo: TempoMap::default(),
@@ -602,9 +614,12 @@ impl Director {
         Ok(())
     }
 
-    /// Start walking a harmonic plan, from its first chord, now. Voice
-    /// pitches nobody has set by hand follow the harmony; hand-set ones stay
-    /// where they are unless `reclaim`. Replaces any plan already running.
+    /// Start walking a harmonic plan, from its first chord, when its
+    /// `start_on` says. Voice pitches nobody has set by hand follow the
+    /// harmony; hand-set ones stay where they are unless `reclaim`. A plan
+    /// starting now replaces the one walking; one that waits for a later
+    /// beat lets the current plan walk on until then (replacing any other
+    /// plan waiting).
     pub fn harmony(
         &mut self,
         now: f64,
@@ -635,14 +650,22 @@ impl Director {
         }
         let starts_at = self.start_time(now, plan.start_on)?;
         self.plans += 1;
-        self.harmony = Some(HarmonyRun {
+        let run = HarmonyRun {
             plan,
+            serial: self.plans,
             starts_at,
             step: 0,
             step_time: starts_at,
             step_beat: self.tempo.beat_at(starts_at),
             applied: None,
-        });
+        };
+        let walking = self.harmony.as_ref().is_some_and(|r| now >= r.starts_at);
+        if starts_at > now + 1e-6 && walking {
+            self.next_harmony = Some(run);
+        } else {
+            self.harmony = Some(run);
+            self.next_harmony = None;
+        }
         self.advance_harmony(now);
         Ok(())
     }
@@ -657,14 +680,14 @@ impl Director {
     /// its first beat, or after the harmony stopped. None if no harmony has
     /// played yet.
     pub fn chord_at(&self, t: f64) -> Option<sequence::ChordAt> {
-        if let Some(run) = &self.harmony {
+        for run in [&self.next_harmony, &self.harmony].into_iter().flatten() {
             if t >= run.starts_at {
                 let mut r = run.clone();
                 r.walk(t, &self.tempo);
                 return Some(sequence::ChordAt {
                     chord: r.plan.progression[r.step % r.len()].0.clone(),
                     key: r.plan.key.clone(),
-                    id: self.plans << 32 | r.step as u64,
+                    id: r.serial << 32 | r.step as u64,
                 });
             }
         }
@@ -677,6 +700,20 @@ impl Director {
             StartOn::Now => now,
             StartOn::Beat => self.tempo.next_beat(now),
             StartOn::Bar => self.tempo.next_bar(now),
+            StartOn::AtQuarter(_) | StartOn::AtTime(_) => {
+                let t = match on {
+                    StartOn::AtQuarter(q) => self.tempo.time_at(q),
+                    StartOn::AtTime(t) => t,
+                    _ => unreachable!(),
+                };
+                if t < now - 0.005 {
+                    return Err(DirectorError::Invalid(format!(
+                        "that moment passed {:.2} s ago",
+                        now - t
+                    )));
+                }
+                t.max(now)
+            }
             StartOn::AtBar(n) => {
                 let t = self.tempo.time_of_bar(n);
                 // A few milliseconds of slack: "this bar" said right on it.
@@ -730,10 +767,49 @@ impl Director {
         Ok(())
     }
 
+    /// Change tempo and/or metre when `on` says (now, or a beat ahead): a
+    /// change ahead waits on the tempo map, so the harmony, the sequences and
+    /// phrases worked out before it happens already follow it. `ramp` in
+    /// quarter notes covers exactly that many. Returns when it happens.
+    #[allow(clippy::too_many_arguments)]
+    pub fn tempo_at(
+        &mut self,
+        now: f64,
+        on: StartOn,
+        bpm: Option<f64>,
+        meter: Option<Meter>,
+        ramp: tempo::Ramp,
+        curve: Curve,
+        downbeat: bool,
+    ) -> Result<f64, DirectorError> {
+        let at = self.start_time(now, on)?;
+        let seconds = match ramp {
+            tempo::Ramp::Seconds(s) => s,
+            tempo::Ramp::Quarters(q) => match bpm {
+                Some(b) => self.tempo.ramp_seconds_for(at, b, meter, q, curve),
+                None => 0.0,
+            },
+        };
+        if at <= now + 1e-6 {
+            self.set_tempo(now, bpm, meter, seconds, curve, downbeat)?;
+            return Ok(now);
+        }
+        // Validate as a change now would, then let it wait.
+        self.clone()
+            .set_tempo(now, bpm, meter, seconds, curve, downbeat)?;
+        let q = self.tempo.beat_at(at);
+        self.tempo = self
+            .tempo
+            .scheduled(now, q, bpm, meter, ramp, curve, downbeat)
+            .map_err(DirectorError::Invalid)?;
+        Ok(at)
+    }
+
     /// Stop walking the harmony. Voices stay on the notes they have (or are
     /// gliding to) and become free for `gesture` or a later plan.
     pub fn stop_harmony(&mut self) {
         self.harmony = None;
+        self.next_harmony = None;
         for &id in &self.voice_pitches {
             let lane = &mut self.lanes[id];
             if lane.owner == Owner::Harmony {
@@ -745,6 +821,13 @@ impl Director {
 
     /// Voice the chord that should be sounding at `now`, if it changed.
     fn advance_harmony(&mut self, now: f64) {
+        if self
+            .next_harmony
+            .as_ref()
+            .is_some_and(|n| now >= n.starts_at)
+        {
+            self.harmony = self.next_harmony.take();
+        }
         let tempo = self.tempo;
         let Some(run) = &mut self.harmony else { return };
         if now < run.starts_at {
@@ -763,7 +846,7 @@ impl Director {
         self.sounding = Some(sequence::ChordAt {
             chord: chord.clone(),
             key: run.plan.key.clone(),
-            id: self.plans << 32 | step as u64,
+            id: run.serial << 32 | step as u64,
         });
         let (pedal, glide, curve) = (run.plan.pedal, run.plan.glide, run.plan.curve);
 
@@ -803,6 +886,7 @@ impl Director {
 
     /// Advance to `now`. Read the result with [`values`](Self::values).
     pub fn tick(&mut self, now: f64) {
+        self.tempo.advance(now);
         self.advance_harmony(now);
         let macro_values: Vec<f32> = self.macro_lanes.iter().map(|l| l.at(now)).collect();
         for l in &mut self.macro_lanes {
@@ -958,6 +1042,20 @@ impl Director {
                 seconds_per_bar: round(self.tempo.seconds_per_bar(now) as f32),
                 ramping_to: ramp.map(|(b, _)| round1(b)),
                 ramp_seconds_remaining: ramp.map(|(_, s)| round(s as f32)),
+                changes_ahead: self
+                    .tempo
+                    .pending_changes()
+                    .into_iter()
+                    .map(|c| TempoChangeState {
+                        // The bar it lands in, by today's count (on a
+                        // downbeat, the bar it opens).
+                        bar: self.tempo.position(c.time - 1e-9).bar
+                            + i64::from(self.tempo.next_bar(c.time - 1e-6) <= c.time + 1e-6),
+                        in_seconds: round((c.time - now).max(0.0) as f32),
+                        bpm: c.bpm.map(round1),
+                        meter: c.meter.map(|m| m.to_string()),
+                    })
+                    .collect(),
             },
             harmony: self.harmony_state(now),
             macros,
@@ -994,6 +1092,11 @@ impl Director {
             position: format!("{}/{}", idx + 1, n),
             looping: plan.looping,
             pedal: plan.pedal.map(|p| plan.key.name(p.pitch_class).to_string()),
+            then: self.next_harmony.as_ref().map(|n| NextPlanState {
+                key: format!("{} {}", n.plan.key.name(n.plan.key.tonic), n.plan.key.mode),
+                starts_in: round((n.starts_at - now).max(0.0) as f32),
+                chord: chord_state(&n.plan.progression[0].0),
+            }),
         })
     }
 }
@@ -1042,6 +1145,19 @@ pub struct TempoState {
     pub ramping_to: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ramp_seconds_remaining: Option<f32>,
+    /// Changes waiting for their beat: when (bar and seconds) and to what.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes_ahead: Vec<TempoChangeState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TempoChangeState {
+    pub bar: i64,
+    pub in_seconds: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bpm: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meter: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1063,6 +1179,16 @@ pub struct HarmonyState {
     pub looping: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pedal: Option<String>,
+    /// A plan waiting for its first beat while this one walks on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub then: Option<NextPlanState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NextPlanState {
+    pub key: String,
+    pub starts_in: f32,
+    pub chord: ChordState,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1139,6 +1265,8 @@ pub struct Conductor {
     /// scheduled ahead: one line for every part, so layers that start
     /// together sound together.
     line: Arc<Mutex<Option<FrameLine>>>,
+    /// The cue list running, if any.
+    cues: Arc<Mutex<Option<cues::Running>>>,
     /// The last [`HEARD_SECONDS`] of output, interleaved stereo, for `listen`.
     heard: Arc<Mutex<std::collections::VecDeque<f32>>>,
 }
@@ -1211,6 +1339,7 @@ impl Conductor {
             agenda: Arc::new(Mutex::new(Vec::new())),
             sequences: Arc::new(Mutex::new(Vec::new())),
             line: Arc::new(Mutex::new(None)),
+            cues: Arc::new(Mutex::new(None)),
             heard: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         let loop_c = c.clone();
@@ -1254,6 +1383,7 @@ impl Conductor {
                     }
                 }
             }
+            self.feed_cues(now);
             self.feed_sequences(now);
             self.feed_notes();
             thread::sleep(period);
@@ -1326,6 +1456,68 @@ impl Conductor {
     /// The tempo map in force.
     pub fn tempo(&self) -> TempoMap {
         *self.lock().tempo()
+    }
+
+    /// Do something with the director itself, holding it for that long
+    /// (never call back into the conductor from `f`).
+    pub fn with_director<R>(&self, f: impl FnOnce(&mut Director) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    /// Run a cue list: its first section begins when something started
+    /// `on` would, and the conductor plays the rest on its own, each action
+    /// at its moment. Replaces the list running: what it had not done yet
+    /// is dropped; what it set going plays on.
+    pub fn cue(&self, list: cues::CueList, on: StartOn) -> Result<cues::CueState, DirectorError> {
+        if list.sections.is_empty() {
+            return Err(DirectorError::Invalid("there are no sections".into()));
+        }
+        let start = self.start_time(on)?;
+        let tempo = self.tempo();
+        let running = cues::Running::new(list, cues::Point::Quarter(tempo.beat_at(start)), &tempo);
+        *self.cues() = Some(running);
+        let now = self.now();
+        self.feed_cues(now);
+        Ok(self.cue_state().expect("just set"))
+    }
+
+    /// Stop the cue list: nothing more of it happens; what it set going
+    /// plays on.
+    pub fn stop_cues(&self) {
+        *self.cues() = None;
+    }
+
+    /// What the cue list is doing, if one runs.
+    pub fn cue_state(&self) -> Option<cues::CueState> {
+        let cues = self.cues();
+        let r = cues.as_ref()?;
+        let now = self.now();
+        Some(r.state(now, &self.tempo()))
+    }
+
+    fn cues(&self) -> MutexGuard<'_, Option<cues::Running>> {
+        self.cues.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Run whatever the cue list has due.
+    fn feed_cues(&self, now: f64) {
+        let runs = {
+            let mut cues = self.cues();
+            let Some(r) = cues.as_mut() else { return };
+            let tempo = self.tempo();
+            let runs = r.due(now, &tempo);
+            if r.finished(now, &tempo) {
+                *cues = None;
+            }
+            runs
+        };
+        for (run, on, what) in runs {
+            if let Err(e) = run(self, now, on) {
+                if let Some(r) = self.cues().as_mut() {
+                    r.failed(format!("{what}: {e}"));
+                }
+            }
+        }
     }
 
     /// A copy of the director as it is now, and the time on its clock: to

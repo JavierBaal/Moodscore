@@ -31,7 +31,7 @@ The milestone that decides whether the idea works:
 2. ✅ The synth engine for Claude: the core of the two note voices (see *Synth engine* below), with the first presets (pluck, lead).
 3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. ✅ The sound quality pass in the same block: ladder filter, analog drift, ensemble width, and four presets tuned against the targets (`moog_bass`, `swell_horn`, `glide_arp`, `deep_pad`); pluck and lead moved to the ladder, ensemble and drift.
 4. ✅ Step sequencer: arpeggios and ostinatos played by the note voices (`sequence`), following the harmony and the tempo, and auditioned offline.
-5. Chained sections: a cue list the engine runs on its own.
+5. ✅ Chained sections: a cue list the engine runs on its own (`sections`), checked whole before anything sounds, every action on its beat.
 6. `density` and `distance` macros.
 
 Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
@@ -86,7 +86,7 @@ More macros, from the same live tests (each section needed many single gestures)
 - `distance`: near and dry to far and washed (reverb and its colour)
 
 Session:
-- Chained sections: a cue list (harmony, macros, voices and fades, each with when it enters, in seconds or bars) that the engine runs on its own. In the live tests of 19 Nov the agent chained sections by sleeping in a shell between calls: fragile (if the conversation stops, the piece freezes in its current section; Claude Desktop has no shell) and it nearly lost a section to an already-scheduled release.
+- [x] Chained sections: a cue list (harmony, tempo, macros, voices, sounds, sequences, phrases and fades, each with when it enters, in bars or seconds) that the engine runs on its own. In the live tests of 19 Nov the agent chained sections by sleeping in a shell between calls: fragile (if the conversation stops, the piece freezes in its current section; Claude Desktop has no shell) and it nearly lost a section to an already-scheduled release. Now one `sections` call, validated whole, with tempo changes and harmonic plans that wait for their beat and `over_bars` for moves that last a section.
 - [x] `start_in` for `start` and `release` (delayed fades, e.g. an outro that peaks before it dies)
 - [x] Live-play polish: curves as plain strings in the tool schemas, hand-set parameters stay put across morphs (`reclaim` to hand them back), brief reports grouped by macro
 - Scenes: `set_scene`, `save_scene`, `list_scenes`, factory scene library

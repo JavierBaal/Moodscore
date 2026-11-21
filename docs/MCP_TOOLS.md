@@ -25,7 +25,7 @@ Fade in from silence. After a `release`, brings the sound back exactly as it was
 { "over": 3, "start_in": 0 }
 ```
 
-`over` defaults to 3 seconds. `start_in` (Phase 2 ✅) delays the fade; `at_bar` (✅) starts it on the downbeat of that bar instead (worked out with the tempo map at the time of the call).
+`over` defaults to 3 seconds, or `over_bars` (✅) fades in over so many bars. `start_in` (Phase 2 ✅) delays the fade; `at_bar` (✅) starts it on the downbeat of that bar instead (worked out with the tempo map at the time of the call).
 
 ### `release` ✅
 
@@ -35,7 +35,7 @@ Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should
 { "over": 12, "start_in": 40 }
 ```
 
-`over` defaults to 8 seconds. `start_in` (Phase 2 ✅) delays the fade, or `at_bar` (✅) starts it on a given bar's downbeat (an ending timed to the music, no seconds to count), so a gesture can peak at full volume before the sound dies away (an unstable outro, say). A waiting fade shows up in `output.scheduled_fade`; any new `start` or `release` replaces it.
+`over` defaults to 8 seconds, or `over_bars` (✅) fades out over so many bars. `start_in` (Phase 2 ✅) delays the fade, or `at_bar` (✅) starts it on a given bar's downbeat (an ending timed to the music, no seconds to count), so a gesture can peak at full volume before the sound dies away (an unstable outro, say). A waiting fade shows up in `output.scheduled_fade`; any new `start` or `release` replaces it.
 
 ### `set_pace` ✅ Phase 2
 
@@ -79,7 +79,7 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 - Voicing: `drone_1` is the bass (E1–E2), `drone_2`…`drone_6` share the chord (E2–A4). Every chord tone is covered when there are enough voices (dropping the fifth first when there aren't); extra voices double the root or fifth, or whatever moves least.
 - Harmony moves pitches only, never levels: the chord sounds through whichever voices are up (bring them in with `gesture` on `drone_N/level`).
 - **Ownership**: harmony takes every voice pitch nobody has set by hand. A pitch retuned with `gesture` leaves the harmony and stays put (`get_state` shows it as `manual` with `held_from: ["harmony"]`) until a `harmony` call with `"reclaim": true`.
-- A new call replaces the plan and starts now from its first chord, voice-leading from wherever the voices are, so changing key or mode mid-piece is just another call. `{ "stop": true }` stops walking: voices stay on their notes and become free.
+- A new call replaces the plan and starts now from its first chord, voice-leading from wherever the voices are, so changing key or mode mid-piece is just another call. A plan that waits for a later beat (`start_on`, `at_bar`) lets the current one walk on until then (the state shows it under `harmony.then`), and the sequencer already sees the chords coming. `{ "stop": true }` stops walking: voices stay on their notes and become free.
 - The state reports `harmony`: key, the chord sounding (`symbol`, `name`, `notes`), the `next` chord, `seconds_to_next`, `position` (e.g. `"2/4"`), `loop` and `pedal`.
 
 ## Note parts ✅ Phase 2
@@ -190,9 +190,42 @@ The musical clock: tempo and metre. It runs from the moment the engine starts, a
 - **`meter`**: `"4/4"`, `"3/4"`, `"6/8"`, `"5/4"`… A new metre starts a new bar at once.
 - **`over`** (seconds) or **`over_bars`** (bars of the new metre): glide to the new tempo instead of switching, an accelerando or ritardando. Default: switch at once. **`curve`** shapes the glide (default `linear`). A ramp in bars covers exactly that many bars, whatever the curve.
 - **`downbeat`**: make this moment bar 1, beat 1. Otherwise the bar count carries on.
+- **`at_bar`** or **`start_on`** (`now`, `beat`, `bar`): the change happens on that downbeat instead of now (a ritardando from bar 33). It waits on the tempo map, so the harmony, the sequences and the phrases worked out before it already follow it; the state lists it under `tempo.changes_ahead` (bar, seconds, bpm). Up to eight can wait. A change now leaves the waiting ones on their beats, except a new `downbeat`, which starts the count over and drops them.
 - Changes never move the beat: the position carries on unbroken, and a glide starts from the tempo of that moment (even in the middle of another glide).
 - The state reports `tempo`: `bpm`, `meter`, `bar` and `beat` now, `seconds_per_bar`, and while a glide is under way `ramping_to` and `ramp_seconds_remaining`.
 - The tempo map is analytic: the beat at any instant is computed exactly from the last change, not accumulated, so it is exact at any sample. The director reads it for the harmony, and the sequencer for every step.
+
+### `sections` ✅
+
+Lay out the piece as sections the engine plays on its own, one after another. One call is the whole structure: no waiting between calls, and the music carries on if the conversation stops.
+
+```json
+{
+  "at_bar": 1,
+  "sections": [
+    { "name": "intro", "bars": 8, "actions": [
+        { "harmony": { "key": "Bb", "progression": [{ "chord": "i", "bars": 2 }, { "chord": "VI", "bars": 2 }] } },
+        { "patch": { "part": 1, "preset": "deep_pad" } },
+        { "sequence": { "part": 1, "motif": "1+3+5+8 - - - - - - -", "rate": "1/4" } },
+        { "morph": { "darkness": 0.8, "over_bars": 8 } } ] },
+    { "name": "build", "bars": 8, "actions": [
+        { "patch": { "part": 2, "preset": "moog_bass" } },
+        { "sequence": { "part": 2, "motif": "1 - - 1~ 5 - 8 <5", "around": "A#1", "rate": "1/8" } },
+        { "gesture": { "param": "drone_5/level", "to": 0.4, "over_bars": 4 }, "after_bars": 4 } ] },
+    { "name": "outro", "bars": 4, "actions": [
+        { "tempo": { "bpm": 100, "over_bars": 4 } },
+        { "release": { "over_bars": 4 } } ] }
+  ]
+}
+```
+
+- **Sections** follow each other: each lasts **`bars`** (counted in the metre in force when it begins, so a tempo change stretches it in seconds, never in bars) or **`seconds`** (for music without a pulse). The first begins on the next bar (or `start_on`, `at_bar`).
+- **Actions** are the tools you call directly, with the same fields: `harmony`, `tempo`, `morph`, `gesture`, `set_pace`, `patch`, `sequence`, `play_notes`, `start`, `release`. Each happens at the section's start, or **`after_bars`** (`after_seconds`) into it. The section says when, so `start_on`, `at_bar` and `start_in` are refused inside. **`over_bars`** in `morph`, `gesture`, `start`, `release` and `tempo` makes a move last bars instead of seconds.
+- **Atomic**: the whole call is checked before anything is scheduled (chords, presets, motifs, parameters, ranges, an action past its section's end). If one action is wrong, nothing happens and the error names the section and the action.
+- **On the beat**: a tempo change, a harmony, a sequence or a phrase is set up about 0.6 s ahead of its moment and lands exactly on it (the tempo change waits on the tempo map, the harmony waits behind the plan walking, the notes are fixed to their samples); a `patch` lands just before its bar so the first note has the new sound; morphs, gestures and fades fire on the moment. Actions due together run tempo first, then pace, harmony, patches, moves, fades, notes, stops.
+- **`loop`** repeats the list. Without it the last section's sound stays (unless it releases), and the list is done when the last section ends.
+- **Changing course**: a new call replaces what has not happened yet; what is sounding plays on until a section changes it. To change the rest of a piece, send the sections still to come with `at_bar`. `{ "stop": true }` ends the list.
+- The state shows `sections`: the `section` playing, its `bar` of `of_bars`, the `next` and `next_in` seconds (or `ends_in`), `loop`, every section's name, and `errors` (an action that failed when its moment came: a sequence refused for lack of harmony, say).
 
 ### `pulse`
 
@@ -258,6 +291,8 @@ Move a single raw parameter along a trajectory. For when a macro is too coarse. 
   "start_in": 10
 }
 ```
+
+`over_bars` (✅) instead of `over` makes it last so many bars on the tempo map; the same goes for `morph`.
 
 #### Voices ✅ Phase 2
 

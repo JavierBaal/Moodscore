@@ -82,7 +82,7 @@ impl FromStr for Meter {
 /// The tempo from one change on: `from` quarter-note BPM at `time`, moving
 /// to `to` over `ramp` seconds along `curve`, then holding.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct TempoMap {
+struct Segment {
     /// Seconds (director clock) when this segment begins.
     time: f64,
     /// Quarter notes since the clock started, at `time`.
@@ -98,7 +98,7 @@ pub struct TempoMap {
     bar_origin: f64,
 }
 
-impl Default for TempoMap {
+impl Default for Segment {
     fn default() -> Self {
         Self {
             time: 0.0,
@@ -122,11 +122,7 @@ pub struct Position {
     pub beat: f64,
 }
 
-impl TempoMap {
-    pub fn meter(&self) -> Meter {
-        self.meter
-    }
-
+impl Segment {
     /// Quarter notes covered `x` seconds into the segment.
     fn quarters_in(&self, x: f64) -> f64 {
         if x <= 0.0 || self.ramp <= 0.0 {
@@ -221,10 +217,9 @@ impl TempoMap {
         }
     }
 
-    /// When bar `n` begins (bar 1 is the first downbeat; numbering restarts
-    /// with a new metre or `downbeat`). Later tempo changes can move it.
-    pub fn time_of_bar(&self, n: i64) -> f64 {
-        self.time_at(self.bar_origin + (n - 1) as f64 * self.meter.quarters_per_bar())
+    /// The quarter-note position of bar `n`, by this change's numbering.
+    fn bar_quarter(&self, n: i64) -> f64 {
+        self.bar_origin + (n - 1) as f64 * self.meter.quarters_per_bar()
     }
 
     /// The first downbeat at or after `t`.
@@ -266,13 +261,13 @@ impl TempoMap {
         ramp: f64,
         curve: Curve,
         downbeat: bool,
-    ) -> TempoMap {
+    ) -> Segment {
         let beat = self.beat_at(t);
         let now_q = self.quarter_bpm(t);
         let new_meter = meter.unwrap_or(self.meter);
         let to = bpm.map_or(now_q, |b| b * new_meter.quarters_per_beat());
         let ramp = if to == now_q { 0.0 } else { ramp.max(0.0) };
-        TempoMap {
+        Segment {
             time: t,
             beat,
             // A change without a ramp switches at once.
@@ -303,6 +298,332 @@ impl TempoMap {
         let to = bpm * meter.unwrap_or(self.meter).quarters_per_beat();
         let mean = from + (to - from) * curve.integral(1.0);
         quarters * 60.0 / mean
+    }
+}
+
+/// Most tempo changes that can wait for their moment at once.
+pub const MAX_PENDING: usize = 8;
+
+/// How long a tempo glide lasts.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Ramp {
+    Seconds(f64),
+    /// Covering this many quarter notes, whatever the curve.
+    Quarters(f64),
+}
+
+/// A tempo change waiting for its moment.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Change {
+    /// The quarter-note position where it happens: beats never move, so a
+    /// change earlier on leaves it on the same beat.
+    at: f64,
+    bpm: Option<f64>,
+    meter: Option<Meter>,
+    ramp: Ramp,
+    curve: Curve,
+    downbeat: bool,
+}
+
+/// Tempo and metre over time: the change in force, and up to
+/// [`MAX_PENDING`] changes waiting for their beat (a ritardando from bar 33,
+/// a new tempo for the next section), so anything worked out ahead already
+/// knows them. Every query is answered by the change in force at that
+/// moment. `Copy`, and it never allocates.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TempoMap {
+    base: Segment,
+    changes: [Option<Change>; MAX_PENDING],
+    /// `segs[i]` is the tempo from `changes[i]` on.
+    segs: [Segment; MAX_PENDING],
+    len: usize,
+}
+
+impl Default for TempoMap {
+    fn default() -> Self {
+        Self {
+            base: Segment::default(),
+            changes: [None; MAX_PENDING],
+            segs: [Segment::default(); MAX_PENDING],
+            len: 0,
+        }
+    }
+}
+
+/// A tempo change that waits, as the reports show it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PendingChange {
+    /// Director time it happens.
+    pub time: f64,
+    /// Quarter-note position.
+    pub at: f64,
+    /// The tempo it goes to (metre unit), if it changes it.
+    pub bpm: Option<f64>,
+    pub meter: Option<Meter>,
+}
+
+impl TempoMap {
+    fn pending(&self) -> &[Segment] {
+        &self.segs[..self.len]
+    }
+
+    /// The change in force at time `t`.
+    fn at_time(&self, t: f64) -> &Segment {
+        self.pending()
+            .iter()
+            .rev()
+            .find(|s| t >= s.time)
+            .unwrap_or(&self.base)
+    }
+
+    /// The change in force at quarter note `b`.
+    fn at_quarter(&self, b: f64) -> &Segment {
+        self.pending()
+            .iter()
+            .rev()
+            .find(|s| b >= s.beat)
+            .unwrap_or(&self.base)
+    }
+
+    /// Work out the waiting changes again, each from the one before.
+    fn recompute(&mut self) {
+        let mut prev = self.base;
+        for i in 0..self.len {
+            let c = self.changes[i].expect("a change for every pending segment");
+            let t = prev.time_at(c.at);
+            let ramp = match c.ramp {
+                Ramp::Seconds(s) => s,
+                Ramp::Quarters(q) => match c.bpm {
+                    Some(bpm) => prev.ramp_seconds_for(t, bpm, c.meter, q, c.curve),
+                    None => 0.0,
+                },
+            };
+            let seg = prev.changed(t, c.bpm, c.meter, ramp, c.curve, c.downbeat);
+            self.segs[i] = seg;
+            prev = seg;
+        }
+    }
+
+    /// Let the changes whose moment has come take over. The answers do not
+    /// change; this only keeps room for new ones.
+    pub fn advance(&mut self, now: f64) {
+        let due = self.pending().iter().take_while(|s| s.time <= now).count();
+        if due == 0 {
+            return;
+        }
+        self.base = self.segs[due - 1];
+        self.changes.copy_within(due.., 0);
+        self.segs.copy_within(due.., 0);
+        self.len -= due;
+        for c in &mut self.changes[self.len..] {
+            *c = None;
+        }
+    }
+
+    /// Changes still waiting for their moment.
+    pub fn pending_changes(&self) -> Vec<PendingChange> {
+        (0..self.len)
+            .map(|i| {
+                let c = self.changes[i].expect("a change for every pending segment");
+                PendingChange {
+                    time: self.segs[i].time,
+                    at: c.at,
+                    bpm: c
+                        .bpm
+                        .map(|_| self.segs[i].to / self.segs[i].meter.quarters_per_beat()),
+                    meter: c.meter,
+                }
+            })
+            .collect()
+    }
+
+    /// The metre in force now (at the last change that has happened).
+    pub fn meter(&self) -> Meter {
+        self.base.meter
+    }
+
+    /// The metre in force at `t`.
+    pub fn meter_at(&self, t: f64) -> Meter {
+        self.at_time(t).meter
+    }
+
+    /// Quarter notes since the clock started, at `t`.
+    pub fn beat_at(&self, t: f64) -> f64 {
+        self.at_time(t).beat_at(t)
+    }
+
+    /// When the clock reaches quarter note `b`. Exact outside a ramp; inside
+    /// one, solved to well under a sample.
+    pub fn time_at(&self, b: f64) -> f64 {
+        self.at_quarter(b).time_at(b)
+    }
+
+    /// Quarter notes per second at `t`.
+    pub fn quarters_per_second(&self, t: f64) -> f64 {
+        self.at_time(t).quarters_per_second(t)
+    }
+
+    /// Tempo at `t`, in the metre's unit per minute.
+    pub fn bpm_at(&self, t: f64) -> f64 {
+        self.at_time(t).bpm_at(t)
+    }
+
+    /// The tempo a ramp under way is heading for, and the seconds it has left.
+    pub fn ramp_at(&self, t: f64) -> Option<(f64, f64)> {
+        self.at_time(t).ramp_at(t)
+    }
+
+    pub fn position(&self, t: f64) -> Position {
+        self.at_time(t).position(t)
+    }
+
+    /// When bar `n` begins (bar 1 is the first downbeat; numbering restarts
+    /// with a new metre or `downbeat`). Later tempo changes can move it.
+    pub fn time_of_bar(&self, n: i64) -> f64 {
+        // The last change whose own numbering puts bar n after it.
+        for s in self.pending().iter().rev() {
+            let q = s.bar_quarter(n);
+            if q >= s.beat - 1e-9 {
+                return self.time_at(q);
+            }
+        }
+        self.time_at(self.base.bar_quarter(n))
+    }
+
+    /// The quarter-note position where bar `n` begins.
+    pub fn quarter_of_bar(&self, n: i64) -> f64 {
+        self.beat_at(self.time_of_bar(n))
+    }
+
+    /// The first downbeat at or after `t`.
+    pub fn next_bar(&self, t: f64) -> f64 {
+        self.next_line(t, |s, t| s.next_bar(t))
+    }
+
+    /// The first beat at or after `t`.
+    pub fn next_beat(&self, t: f64) -> f64 {
+        self.next_line(t, |s, t| s.next_beat(t))
+    }
+
+    fn next_line(&self, t: f64, line: impl Fn(&Segment, f64) -> f64) -> f64 {
+        let r = line(self.at_time(t), t);
+        // A change before that line brings its own grid.
+        match self.pending().iter().find(|s| s.time > t) {
+            Some(n) if r > n.time + 1e-9 => line(n, n.time),
+            _ => r,
+        }
+    }
+
+    /// Seconds a bar lasts at `t`'s tempo.
+    pub fn seconds_per_bar(&self, t: f64) -> f64 {
+        self.at_time(t).seconds_per_bar(t)
+    }
+
+    /// The map after a change at `t`, now. The beat position carries on
+    /// unbroken, so nothing already counted moves; changes still waiting
+    /// stay on their beats, worked out again from this one (unless this is
+    /// a new downbeat, which drops them).
+    ///
+    /// - `bpm`: the new tempo in the new metre's unit; `None` keeps the
+    ///   current speed of the quarter note.
+    /// - `meter`: a new metre starts a new bar at `t`.
+    /// - `ramp`: glide to `bpm` over these seconds along `curve` instead of
+    ///   switching at once (0 switches).
+    /// - `downbeat`: make `t` the downbeat of bar 1.
+    pub fn changed(
+        &self,
+        t: f64,
+        bpm: Option<f64>,
+        meter: Option<Meter>,
+        ramp: f64,
+        curve: Curve,
+        downbeat: bool,
+    ) -> TempoMap {
+        let mut m = *self;
+        m.advance(t);
+        m.base = m.base.changed(t, bpm, meter, ramp, curve, downbeat);
+        let beat = m.base.beat;
+        // A new downbeat starts the count over: changes waiting for a bar
+        // of the old count go with it.
+        let keep = if downbeat {
+            0
+        } else {
+            m.pending().iter().filter(|s| s.beat > beat).count()
+        };
+        let drop = m.len - keep;
+        m.changes.copy_within(drop.., 0);
+        m.len = keep;
+        for c in &mut m.changes[m.len..] {
+            *c = None;
+        }
+        m.recompute();
+        m
+    }
+
+    /// The map with a change waiting for quarter note `at` (after `now`): the
+    /// same as [`changed`](Self::changed) then, but known now. A change
+    /// already waiting for that beat is replaced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scheduled(
+        &self,
+        now: f64,
+        at: f64,
+        bpm: Option<f64>,
+        meter: Option<Meter>,
+        ramp: Ramp,
+        curve: Curve,
+        downbeat: bool,
+    ) -> Result<TempoMap, String> {
+        let mut m = *self;
+        m.advance(now);
+        let mut list: Vec<Change> = m.changes[..m.len]
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|c| (c.at - at).abs() > 1e-9)
+            .collect();
+        if list.len() >= MAX_PENDING {
+            return Err(format!(
+                "{MAX_PENDING} tempo changes are already waiting; let one happen first"
+            ));
+        }
+        list.push(Change {
+            at,
+            bpm,
+            meter,
+            ramp,
+            curve,
+            downbeat,
+        });
+        list.sort_by(|a, b| a.at.total_cmp(&b.at));
+        m.len = list.len();
+        for (i, slot) in m.changes.iter_mut().enumerate() {
+            *slot = list.get(i).copied();
+        }
+        m.recompute();
+        Ok(m)
+    }
+
+    /// Drop the changes still waiting.
+    pub fn without_pending(&self) -> TempoMap {
+        let mut m = *self;
+        m.changes = [None; MAX_PENDING];
+        m.len = 0;
+        m
+    }
+
+    /// Seconds a ramp from the tempo at `t` to `bpm` (metre unit) must take
+    /// to cover `quarters`, along `curve`.
+    pub fn ramp_seconds_for(
+        &self,
+        t: f64,
+        bpm: f64,
+        meter: Option<Meter>,
+        quarters: f64,
+        curve: Curve,
+    ) -> f64 {
+        self.at_time(t)
+            .ramp_seconds_for(t, bpm, meter, quarters, curve)
     }
 }
 
@@ -411,5 +732,107 @@ mod tests {
         assert!(close(m.next_bar(3.0), 3.0, 1e-12));
         assert_eq!(m.position(3.0).bar, 1);
         assert!(close(m.next_bar(3.2), 5.0, 1e-12));
+    }
+
+    #[test]
+    fn a_change_can_wait_for_its_beat() {
+        // 120 BPM: a bar every 2 s. At bar 5 (quarter 16, 8 s), 60 BPM.
+        let m = TempoMap::default()
+            .scheduled(
+                0.0,
+                16.0,
+                Some(60.0),
+                None,
+                Ramp::Seconds(0.0),
+                Curve::Linear,
+                false,
+            )
+            .unwrap();
+        assert!(close(m.bpm_at(7.9), 120.0, 1e-9));
+        assert!(close(m.bpm_at(8.0), 60.0, 1e-9));
+        assert!(close(m.time_of_bar(5), 8.0, 1e-9));
+        assert!(close(m.time_of_bar(6), 12.0, 1e-9));
+        assert!(close(m.beat_at(10.0), 18.0, 1e-9));
+        assert!(close(m.time_at(18.0), 10.0, 1e-9));
+        assert_eq!(m.pending_changes().len(), 1);
+        // When its moment passes, the answers stay the same.
+        let mut later = m;
+        later.advance(9.0);
+        assert!(later.pending_changes().is_empty());
+        for t in [8.5, 9.0, 11.0, 20.0] {
+            assert!(close(later.beat_at(t), m.beat_at(t), 1e-9));
+        }
+        // A change now leaves the waiting one on its beat.
+        let faster = m.changed(2.0, Some(240.0), None, 0.0, Curve::Linear, false);
+        // From quarter 4 at 2 s, 12 quarters at 4 per second: bar 5 at 5 s.
+        assert!(close(faster.time_of_bar(5), 5.0, 1e-9));
+        assert!(close(faster.bpm_at(5.1), 60.0, 1e-9));
+    }
+
+    #[test]
+    fn a_waiting_ramp_covers_its_beats() {
+        // From bar 3 (quarter 8), slow to 60 over two bars (8 quarters).
+        let m = TempoMap::default()
+            .scheduled(
+                0.0,
+                8.0,
+                Some(60.0),
+                None,
+                Ramp::Quarters(8.0),
+                Curve::EaseOut,
+                false,
+            )
+            .unwrap();
+        let end = m.time_at(16.0);
+        assert!(close(m.bpm_at(end + 0.001), 60.0, 1e-6));
+        assert!(m.bpm_at(m.time_at(12.0)) < 120.0 && m.bpm_at(m.time_at(12.0)) > 60.0);
+        // Two changes waiting, in order; the same beat replaces.
+        let m2 = m
+            .scheduled(
+                0.0,
+                24.0,
+                Some(90.0),
+                None,
+                Ramp::Seconds(0.0),
+                Curve::Linear,
+                false,
+            )
+            .unwrap()
+            .scheduled(
+                0.0,
+                24.0,
+                Some(100.0),
+                None,
+                Ramp::Seconds(0.0),
+                Curve::Linear,
+                false,
+            )
+            .unwrap();
+        assert_eq!(m2.pending_changes().len(), 2);
+        assert!(close(m2.bpm_at(m2.time_at(24.0) + 0.01), 100.0, 1e-6));
+    }
+
+    #[test]
+    fn a_waiting_new_metre_brings_its_bars() {
+        // At quarter 8 (4 s), 6/8 with the eighth at the same speed... and a
+        // new downbeat there.
+        let m = TempoMap::default()
+            .scheduled(
+                0.0,
+                8.0,
+                Some(240.0),
+                "6/8".parse().ok(),
+                Ramp::Seconds(0.0),
+                Curve::Linear,
+                false,
+            )
+            .unwrap();
+        assert_eq!(m.meter_at(3.9).to_string(), "4/4");
+        assert_eq!(m.meter_at(4.0).to_string(), "6/8");
+        // The next downbeat after 3.5 s is the change itself, not 4/4's.
+        assert!(close(m.next_bar(3.5), 4.0, 1e-9));
+        // 6/8 bars are three quarters: 1.5 s at the same quarter speed.
+        assert!(close(m.next_bar(4.1), 5.5, 1e-9));
+        assert_eq!(m.position(4.0).bar, 1);
     }
 }
