@@ -19,9 +19,9 @@
     "filter/keytrack": 0.3,
     "filter/resonance": 0.15,
     "filter/drive": 0.1,
-    "amp_env/attack": 0.45,
+    "amp_env/attack": 0.5,
     "amp_env/decay": 2.0,
-    "amp_env/sustain": 0.9,
+    "amp_env/sustain": 0.95,
     "amp_env/release": 2.5,
     "lfo2/shape": "triangle",
     "lfo2/rate": 0.12,
@@ -29,7 +29,7 @@
     "mod1/source": "lfo2",
     "mod1/dest": "filter/cutoff",
     "mod1/amount": 0.03,
-    "fx/ensemble": 0.55,
+    "fx/ensemble": 0.65,
     "part/level": 0.4,
     "part/reverb_send": 0.15
   }

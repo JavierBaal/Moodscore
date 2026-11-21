@@ -442,6 +442,16 @@ check(not err and len(r.get("notes", [])) == 3 and r["comparison"]["of"] == 3 an
       and "centroid_hz" in r["metrics"], f"audition measures each note and compares ({text[:120]})")
 err, text = call("audition", {"part": 1, "phrase": "A3:1", "room": True})
 check(not err and json.loads(text)["seconds"] > 2.5, "audition through the room rings on")
+# The tuned presets sit well inside their targets, so a tweak does not tip
+# them out (a correlation of 1 is as far as it goes, so it does not count).
+for preset, target in [("moog_bass", "deep_moog_bass"), ("swell_horn", "swell_horn"),
+                       ("glide_arp", "glide_arp"), ("deep_pad", "deep_pad")]:
+    call("patch", {"part": 1, "preset": preset})
+    err, text = call("audition", {"part": 1, "target": target})
+    res = json.loads(text)["comparison"]["results"] if not err else []
+    worst = max((abs(x["value"] - x["target"]) / x["tolerance"], x["metric"]) for x in res
+                if not (x["metric"].endswith("correlation") and x["value"] >= 0.999)) if res else (9, "?")
+    check(not err and worst[0] <= 0.85, f"{preset} sits inside {target} (worst {worst[1]} at {worst[0]:.2f} of its tolerance)")
 time.sleep(1.2)
 err, text = call("listen", {"seconds": 1})
 check(not err and "summary" in json.loads(text), f"listen measures the live output ({text[:80]})")
