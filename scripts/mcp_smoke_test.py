@@ -326,6 +326,12 @@ err, text = call("audition", {"part": 1, "sequence": {"arp": "up", "range": ["A3
 r = json.loads(text) if not err else {}
 check(not err and r["played"]["notes"] == 8 and len(r.get("notes", [])) == 8 and r["played"]["chords"],
       f"audition plays a bar of the sequence over the harmony ({text[:100] if err else r['played']})")
+err, text = call("audition", {"part": 1, "bpm": 96, "bars": 2, "sequence": {"arp": "up", "rate": "1/8"},
+                              "harmony": {"key": "D", "mode": "dorian", "progression": [{"chord": "bVII", "bars": 2}]}})
+r = json.loads(text) if not err else {}
+st = json.loads(call("get_state", {})[1])
+check(not err and r["played"]["chords"] == ["C", "C"] and r["played"]["bpm"] == 96 and st["tempo"]["bpm"] == 240,
+      f"a sequence auditioned over chords and a tempo of its own, nothing else touched ({text[:100] if err else r['played']})")
 err, text = call("sequence", {"part": 1, "motif": "1 5", "rhythm": "x."})
 check(err and "own rhythm" in text, f"a motif's rhythm explained ({text[:60]})")
 err, text = call("sequence", {"part": 1, "arp": "sideways"})

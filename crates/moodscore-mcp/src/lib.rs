@@ -361,9 +361,11 @@ pub struct AuditionArgs {
     pub sequence: Option<sequencer::SequenceSpec>,
     /// Bars of the sequence to play. Default 2.
     pub bars: Option<f64>,
+    /// Chords for a sequence audition, with the harmony tool's fields (key, mode, progression…): only this audition hears them, nothing that is playing changes. Default: the harmony in force.
+    pub harmony: Option<HarmonyArgs>,
     /// What to play, in the short phrase form ("A3:2", "A#1:4~ F2:4", "A3+C4+E4:8"). Default: the target's phrase, else "A3:2".
     pub phrase: Option<String>,
-    /// Tempo for the phrase. Default: the target's, else the current tempo.
+    /// Tempo for the phrase or the sequence. Default: the target's (for a phrase), else the current tempo.
     pub bpm: Option<f64>,
     /// Through the shared room (the reverb and master) as well, with the drones silent. Default false: the part alone.
     pub room: Option<bool>,
@@ -722,11 +724,16 @@ impl MoodscoreServer {
             if args.phrase.as_deref().is_some_and(|p| !p.trim().is_empty()) {
                 return Err("give a phrase or a sequence, not both".into());
             }
-            if args.bpm.is_some() {
-                return Err("a sequence plays at the tempo in force (set it with tempo)".into());
-            }
             let (pattern, plays) = spec.pattern()?;
             let bars = args.bars.unwrap_or(2.0);
+            let harmony = match &args.harmony {
+                Some(h) => Some(
+                    actions::build_plan(h)
+                        .map_err(|e| format!("harmony: {e}"))?
+                        .0,
+                ),
+                None => None,
+            };
             let (report, played) = ears::audition_sequence(
                 &self.conductor,
                 part,
@@ -734,6 +741,10 @@ impl MoodscoreServer {
                 bars,
                 args.room.unwrap_or(false),
                 target,
+                ears::Over {
+                    bpm: args.bpm,
+                    harmony,
+                },
             )?;
             let mut value = moodscore_ear::to_json(&report);
             if let Some(obj) = value.as_object_mut() {

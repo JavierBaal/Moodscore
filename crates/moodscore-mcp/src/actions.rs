@@ -335,30 +335,18 @@ pub fn prepare_gesture(ctx: &Ctx, a: GestureArgs) -> Result<Action, String> {
     })
 }
 
-pub fn prepare_harmony(ctx: &Ctx, a: HarmonyArgs) -> Result<Action, String> {
-    if a.stop.unwrap_or(false) {
-        return Ok(Action {
-            kind: Kind::Stop,
-            what: "harmony stop".into(),
-            own: StartOn::Now,
-            quarters: None,
-            run: Arc::new(|c, _, _| {
-                c.stop_harmony();
-                Ok(())
-            }),
-        });
-    }
-    ctx.no_timing(&[
-        ("start_on", a.start_on.is_some()),
-        ("at_bar", a.at_bar.is_some()),
-    ])?;
+/// A harmonic plan from the harmony tool's fields (timing aside), and what
+/// it plays in words.
+pub fn build_plan(a: &HarmonyArgs) -> Result<(HarmonyPlan, String), String> {
     let key_name = a
         .key
+        .clone()
         .ok_or("harmony needs a key (e.g. \"A\"), or stop: true")?;
     let key =
         Key::new(&key_name, a.mode.as_deref().unwrap_or("aeolian")).map_err(|e| e.to_string())?;
     let steps = a
         .progression
+        .as_ref()
         .filter(|p| !p.is_empty())
         .ok_or("harmony needs a progression with at least one chord")?;
     if steps.len() > MAX_CHORDS {
@@ -391,11 +379,6 @@ pub fn prepare_harmony(ctx: &Ctx, a: HarmonyArgs) -> Result<Action, String> {
         return Err("glide must be between 0 and 600 seconds".into());
     }
     let curve = curve_or(a.curve.as_deref(), Curve::EaseInOut)?;
-    let own = if ctx.in_section {
-        StartOn::Now
-    } else {
-        start_on(a.start_on.as_deref(), a.at_bar)?
-    };
     let chords: Vec<String> = steps.iter().map(|s| s.chord.clone()).collect();
     let plan = HarmonyPlan {
         key,
@@ -406,6 +389,32 @@ pub fn prepare_harmony(ctx: &Ctx, a: HarmonyArgs) -> Result<Action, String> {
         curve,
         start_on: StartOn::Now,
     };
+    Ok((plan, format!("harmony {key_name} {}", chords.join(" "))))
+}
+
+pub fn prepare_harmony(ctx: &Ctx, a: HarmonyArgs) -> Result<Action, String> {
+    if a.stop.unwrap_or(false) {
+        return Ok(Action {
+            kind: Kind::Stop,
+            what: "harmony stop".into(),
+            own: StartOn::Now,
+            quarters: None,
+            run: Arc::new(|c, _, _| {
+                c.stop_harmony();
+                Ok(())
+            }),
+        });
+    }
+    ctx.no_timing(&[
+        ("start_on", a.start_on.is_some()),
+        ("at_bar", a.at_bar.is_some()),
+    ])?;
+    let (plan, what) = build_plan(&a)?;
+    let own = if ctx.in_section {
+        StartOn::Now
+    } else {
+        start_on(a.start_on.as_deref(), a.at_bar)?
+    };
     let reclaim = a.reclaim.unwrap_or(false);
     // Check on a copy (the instrument has voices to harmonise, say).
     let (mut d, now) = ctx.c.snapshot();
@@ -413,7 +422,7 @@ pub fn prepare_harmony(ctx: &Ctx, a: HarmonyArgs) -> Result<Action, String> {
         .map_err(|e| e.to_string())?;
     Ok(Action {
         kind: Kind::Harmony,
-        what: format!("harmony {key_name} {}", chords.join(" ")),
+        what,
         own,
         quarters: None,
         run: Arc::new(move |c, _now, on| {

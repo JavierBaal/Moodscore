@@ -287,6 +287,15 @@ pub fn analyze_file(req: FileRequest) -> Result<Report, String> {
 /// Render `part`'s current sound playing `bars` bars of a sequence, offline,
 /// from the next bar over the harmony and tempo in force, and measure it.
 /// Also says what was played: bars, tempo, the chords under it.
+/// What a sequence audition plays over, if not what is in force.
+pub struct Over {
+    /// Its own tempo (the metre's unit per minute).
+    pub bpm: Option<f64>,
+    /// Its own chords.
+    pub harmony: Option<moodscore_director::HarmonyPlan>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn audition_sequence(
     c: &Conductor,
     part: usize,
@@ -294,17 +303,29 @@ pub fn audition_sequence(
     bars: f64,
     room: bool,
     target: Option<Target>,
+    over: Over,
 ) -> Result<(Report, serde_json::Value), String> {
     if !bars.is_finite() || !(0.25..=16.0).contains(&bars) {
         return Err("bars must be between 0.25 and 16".into());
     }
-    let (d, now) = c.snapshot();
-    let tempo = *d.tempo();
+    // Work on a copy: a tempo or chords of the audition's own never touch
+    // what is playing.
+    let (mut d, now) = c.snapshot();
+    if let Some(bpm) = over.bpm {
+        d.set_tempo(now, Some(bpm), None, 0.0, Curve::Linear, false)
+            .map_err(|e| e.to_string())?;
+    }
     let start = d.start_time(now, StartOn::Bar).map_err(|e| e.to_string())?;
+    if let Some(mut plan) = over.harmony {
+        plan.start_on = StartOn::AtTime(start);
+        d.harmony(now, plan, false).map_err(|e| e.to_string())?;
+    }
+    let tempo = *d.tempo();
     if pattern.needs_harmony() && d.chord_at(start).is_none() {
         return Err(
-            "no harmony is playing to follow: set one with harmony first (it can be \
-             set while silent), or give the arpeggio its notes, or write the motif in note names"
+            "no harmony to follow: give the audition its own (harmony: {key, mode, \
+             progression}), or set one with harmony, or give the arpeggio its notes, or write \
+             the motif in note names"
                 .into(),
         );
     }

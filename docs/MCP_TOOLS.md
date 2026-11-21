@@ -331,7 +331,7 @@ Claude's ears for its own sounds: render a note part's current sound playing a p
 ```
 
 - `phrase` in the short form of `play_notes` (default: the target's phrase, else `"A3:2"`); `bpm` (default: the target's, else the current tempo); `room: true` adds the shared reverb and master, with the drones silent.
-- Or `sequence` (the same fields as the `sequence` tool) and `bars` (default 2, up to 16): plays it from the next bar over the harmony and tempo in force; `played` says the bars, bpm, the chords under it and how many notes.
+- Or `sequence` (the same fields as the `sequence` tool) and `bars` (default 2, up to 16): plays it from the next bar over the harmony and tempo in force, or over chords and a tempo of its own (`harmony`, with the harmony tool's fields, and `bpm`), which only the audition hears: nothing that is playing changes. `played` says the bars, bpm, the chords under it and how many notes.
 - Returns `summary` (the sound in words), `level`, `spectrum` (centroid, energy per band, tilt in dB/octave, noisiness), `stereo` (correlation and balance below 150 Hz, 150 Hz–3 kHz and 3–12 kHz), `over_time` (brightness and level in eight stretches), and per note: attack, change in level over the note, brightness at 10/50/90 %, harmonics 2–8 against the fundamental (single notes), tuning, wobble and glide time. `metrics` has the headline numbers, flat.
 - With `target`, `comparison` lists each criterion: value, target, tolerance, and "on target" or how far above or below.
 
