@@ -507,6 +507,19 @@ out = json.loads(call("get_state", {})[1])["output"]
 check(out["gain"] == 0.0 and "scheduled_fade" not in out, "a delayed release happens on time")
 call("start", {"over": 0.2})
 time.sleep(0.5)
+# A release ends what was playing once it is silent, not what comes after.
+call("sequence", {"part": 2, "arp": "up", "notes": ["A3", "E4"], "rate": "1/8", "start_on": "now"})
+call("play_notes", {"part": 3, "phrase": "A2:1", "repeat": 50})
+call("release", {"over": 0.5})
+call("play_notes", {"part": 4, "phrase": "E4:1", "repeat": 50})
+time.sleep(1.2)
+notes = json.loads(call("get_state", {})[1])["notes"]
+check(not notes[1].get("sequences") and notes[2].get("waiting", 0) == 0 and notes[3].get("waiting", 0) > 0,
+      f"a release stops the phrases and sequences that were playing ({notes[1:]})")
+for part in (2, 3, 4):
+    call("play_notes", {"part": part, "stop": True})
+call("start", {"over": 0.2})
+time.sleep(0.5)
 
 err, text = call("release", {"over": 0.5})
 check(not err and not json.loads(text)["output"]["playing"], "release")

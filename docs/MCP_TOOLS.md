@@ -29,7 +29,7 @@ Fade in from silence. After a `release`, brings the sound back exactly as it was
 
 ### `release` ✅
 
-Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should map here. The instrument keeps its state; `start` brings it back.
+Fade the whole piece out to silence. A spoken "stop", "quiet" or "enough" should map here. The instrument keeps its state; `start` brings it back. Once the output is silent, the phrases and sequences that were playing stop too (nothing goes on unheard to come back at the next `start`); anything set going after the release plays on.
 
 ```json
 { "over": 12, "start_in": 40 }

@@ -633,7 +633,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
+        description = "Fade everything out to silence. Use when the person says stop, quiet, enough, or for the end of a scene. The instrument keeps its state; `start` brings it back. Once silent, the phrases and sequences that were playing stop too (no need to stop them). With start_in the fade waits, e.g. so an unstable outro peaks at full volume before it dies away. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn release(&self, Parameters(args): Parameters<ReleaseArgs>) -> Result<String, String> {
         let a = actions::prepare_fade(&self.ctx(false), args.into(), 0.0)?;

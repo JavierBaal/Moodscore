@@ -1255,6 +1255,9 @@ pub struct Conductor {
     clock: Instant,
     running: Arc<AtomicBool>,
     pending_fade: Arc<Mutex<Option<PendingFade>>>,
+    /// A release under way: once the output is silent, what was set
+    /// playing before it (ids below this) stops.
+    releasing: Arc<Mutex<Option<u64>>>,
     /// Notes waiting to be handed to the engine, by frame. They go when they
     /// are less than [`NOTE_LOOKAHEAD`] away, so the audio thread only ever
     /// holds a few, and a stop can still cancel the rest.
@@ -1328,7 +1331,11 @@ const MARGIN: f64 = 0.03;
 #[derive(Copy, Clone, Debug)]
 struct Queued {
     msg: NoteMsg,
+    /// The sequence it comes from, 0 for a phrase.
     seq: u64,
+    /// The sequence's id, or the phrase's: what was set going before a
+    /// release has a smaller one.
+    born: u64,
 }
 
 /// A sequence a part is playing or will play.
@@ -1377,6 +1384,7 @@ impl Conductor {
             clock: Instant::now(),
             running: Arc::new(AtomicBool::new(true)),
             pending_fade: Arc::new(Mutex::new(None)),
+            releasing: Arc::new(Mutex::new(None)),
             agenda: Arc::new(Mutex::new(Vec::new())),
             sequences: Arc::new(Mutex::new(Vec::new())),
             line: Arc::new(Mutex::new(None)),
@@ -1429,11 +1437,12 @@ impl Conductor {
                 let mut pending = self.pending();
                 if let Some(f) = *pending {
                     if now >= f.at {
-                        self.engine.fade_to(f.to, f.over);
+                        self.apply_fade(f.to, f.over);
                         *pending = None;
                     }
                 }
             }
+            self.end_after_release();
             self.feed_cues(now);
             self.feed_sequences(now);
             self.feed_notes();
@@ -1767,7 +1776,7 @@ impl Conductor {
         part: usize,
         events: &[(f64, NoteEvent)],
     ) -> Result<(), DirectorError> {
-        self.queue(part, 0, events)?;
+        self.queue(part, 0, self.next_id(), events)?;
         self.feed_notes();
         Ok(())
     }
@@ -1777,6 +1786,7 @@ impl Conductor {
         &self,
         part: usize,
         seq: u64,
+        born: u64,
         events: &[(f64, NoteEvent)],
     ) -> Result<(), DirectorError> {
         let line = self.frame_line();
@@ -1795,6 +1805,7 @@ impl Conductor {
                     event,
                 },
                 seq,
+                born,
             });
         }
         // Stable: events at the same frame keep their order.
@@ -1994,7 +2005,7 @@ impl Conductor {
         drop(seqs);
         for (part, id, events) in batches {
             // A full agenda drops these steps rather than stalling the loop.
-            let _ = self.queue(part, id, &events);
+            let _ = self.queue(part, id, id, &events);
         }
     }
 
@@ -2077,7 +2088,48 @@ impl Conductor {
             });
         } else {
             *pending = None;
-            self.engine.fade_to(to, over);
+            self.apply_fade(to, over);
+        }
+    }
+
+    /// Start a fade on the engine; a release marks what plays now, to stop
+    /// it once the output is silent.
+    fn apply_fade(&self, to: f32, over: f32) {
+        self.engine.fade_to(to, over);
+        let mark = (to <= 0.0).then(|| self.next_id());
+        *self.releasing.lock().unwrap_or_else(|e| e.into_inner()) = mark;
+    }
+
+    /// Once a release has brought the output to silence, stop the phrases
+    /// and sequences set going before it (the drones keep their settings
+    /// for the next start; whatever was set going since plays on).
+    fn end_after_release(&self) {
+        let mut releasing = self.releasing.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mark) = *releasing else { return };
+        let (gain, target) = self.engine.output_gain();
+        if target > 0.0 {
+            *releasing = None;
+            return;
+        }
+        if gain > 0.0 {
+            return;
+        }
+        *releasing = None;
+        drop(releasing);
+        let mut parts = [false; moodscore_engine::PARTS];
+        self.sequences().retain(|s| {
+            let old = s.id < mark;
+            parts[s.part] |= old;
+            !old
+        });
+        self.agenda().retain(|q| {
+            let old = q.born < mark;
+            parts[q.msg.part] |= old;
+            !old
+        });
+        let frame = self.engine.frames_rendered();
+        for (part, _) in parts.iter().enumerate().filter(|(_, ended)| **ended) {
+            self.engine.note(part, frame, NoteEvent::AllOff);
         }
     }
 
