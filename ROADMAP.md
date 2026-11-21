@@ -33,6 +33,7 @@ The milestone that decides whether the idea works:
 4. ✅ Step sequencer: arpeggios and ostinatos played by the note voices (`sequence`), following the harmony and the tempo, and auditioned offline.
 5. ✅ Chained sections: a cue list the engine runs on its own (`sections`), checked whole before anything sounds, every action on its beat.
 6. ✅ `density` and `distance` macros (data-driven, with a `span` per target; the room gained size, damping, predelay, wet, direct and air).
+7. ✅ Fixes from the first live test (21 Nov): four note parts (resting parts cost nothing); altered numerals counted from the major scale (`bVII` is the same note in every mode); a sequence auditioned at its own tempo and over its own chords; each section's bar in the reports and `downbeat` to count from 1; `listen` to one section by name; `space/thin`, so a far ending no longer leaves the low end ringing alone; the tuned presets centred inside their targets.
 
 Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
 
