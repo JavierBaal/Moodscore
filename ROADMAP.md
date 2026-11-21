@@ -32,7 +32,7 @@ The milestone that decides whether the idea works:
 3. ✅ Audition: Claude's ears (render, analyse, describe): `audition`, `listen`, `analyze_file`, targets measured from reference tracks. ✅ The sound quality pass in the same block: ladder filter, analog drift, ensemble width, and four presets tuned against the targets (`moog_bass`, `swell_horn`, `glide_arp`, `deep_pad`); pluck and lead moved to the ladder, ensemble and drift.
 4. ✅ Step sequencer: arpeggios and ostinatos played by the note voices (`sequence`), following the harmony and the tempo, and auditioned offline.
 5. ✅ Chained sections: a cue list the engine runs on its own (`sections`), checked whole before anything sounds, every action on its beat.
-6. `density` and `distance` macros.
+6. ✅ `density` and `distance` macros (data-driven, with a `span` per target; the room gained size, damping, predelay, wet, direct and air).
 
 Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
 
@@ -82,8 +82,8 @@ Pulse (cinematic rhythm, not a drum machine):
 - `urgency` macro: pulse density, tempo and tension together ("time is running out")
 
 More macros, from the same live tests (each section needed many single gestures):
-- `density`: how many voices sound, 0..1, bringing voices in and out in a musical order
-- `distance`: near and dry to far and washed (reverb and its colour)
+- [x] `density`: how many voices sound, 0..1, bringing voices in and out in a musical order (low to high, each over its own stretch)
+- [x] `distance`: near and dry to far and washed (the shared room: size, damping, predelay, wet, and the direct sound's level and air), notes included
 
 Session:
 - [x] Chained sections: a cue list (harmony, tempo, macros, voices, sounds, sequences, phrases and fades, each with when it enters, in bars or seconds) that the engine runs on its own. In the live tests of 19 Nov the agent chained sections by sleeping in a shell between calls: fragile (if the conversation stops, the piece freezes in its current section; Claude Desktop has no shell) and it nearly lost a section to an already-scheduled release. Now one `sections` call, validated whole, with tempo changes and harmonic plans that wait for their beat and `over_bars` for moves that last a section.

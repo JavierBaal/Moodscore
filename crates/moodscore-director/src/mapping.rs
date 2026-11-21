@@ -10,6 +10,10 @@
 //!   on top of whatever sets the parameter (or its default, if nothing does).
 //!   Any number of macros may `add` to the same parameter. The sum is clamped
 //!   to the parameter's range.
+//!
+//! `"span": [lo, hi]` makes a target move only while the macro goes from `lo`
+//! to `hi` (holding `from` below and `to` above): so voices can come in one
+//! after another as a single macro rises.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -67,6 +71,8 @@ struct TargetFile {
     curve: MapCurve,
     #[serde(default)]
     mode: Mode,
+    #[serde(default)]
+    span: Option<[f32; 2]>,
 }
 
 /// One parameter driven by a macro.
@@ -77,12 +83,15 @@ pub struct Target {
     pub to: f32,
     pub curve: MapCurve,
     pub mode: Mode,
+    /// The part of the macro's range over which it moves.
+    pub span: (f32, f32),
 }
 
 impl Target {
     /// The value (for `set`) or offset (for `add`) at macro value `m` in `0..=1`.
     pub fn value(&self, m: f32) -> f32 {
-        let m = m.clamp(0.0, 1.0);
+        let (lo, hi) = self.span;
+        let m = ((m.clamp(0.0, 1.0) - lo) / (hi - lo)).clamp(0.0, 1.0);
         match self.curve {
             MapCurve::Linear => self.from + (self.to - self.from) * m,
             MapCurve::Exp => self.from * (self.to / self.from).powf(m),
@@ -164,6 +173,16 @@ pub fn load(json: &str, params: &[ParamInfo]) -> Result<Vec<MacroDef>, MappingEr
                     t.param
                 )));
             }
+            let span = t.span.unwrap_or([0.0, 1.0]);
+            if !(0.0..=1.0).contains(&span[0])
+                || !(0.0..=1.0).contains(&span[1])
+                || span[0] >= span[1]
+            {
+                return Err(MappingError(format!(
+                    "macro '{name}': the span of '{}' must be [low, high] with 0 <= low < high <= 1",
+                    t.param
+                )));
+            }
             if t.curve == MapCurve::Exp && t.mode == Mode::Add {
                 return Err(MappingError(format!(
                     "macro '{name}': 'exp' can't be used with 'add' on '{}'",
@@ -210,6 +229,7 @@ pub fn load(json: &str, params: &[ParamInfo]) -> Result<Vec<MacroDef>, MappingEr
                     to: t.to,
                     curve: t.curve,
                     mode: t.mode,
+                    span: (span[0], span[1]),
                 });
             }
         }
@@ -225,7 +245,24 @@ pub fn load(json: &str, params: &[ParamInfo]) -> Result<Vec<MacroDef>, MappingEr
 
 #[cfg(test)]
 mod tests {
-    use super::matches;
+    use super::*;
+
+    #[test]
+    fn a_span_moves_a_target_over_part_of_the_macro() {
+        let t = Target {
+            param: 0,
+            from: 0.0,
+            to: 0.4,
+            curve: MapCurve::Linear,
+            mode: Mode::Set,
+            span: (0.25, 0.5),
+        };
+        assert_eq!(t.value(0.0), 0.0);
+        assert_eq!(t.value(0.25), 0.0);
+        assert!((t.value(0.375) - 0.2).abs() < 1e-6);
+        assert!((t.value(0.5) - 0.4).abs() < 1e-6);
+        assert!((t.value(1.0) - 0.4).abs() < 1e-6);
+    }
 
     #[test]
     fn wildcard_matches_within_one_segment() {

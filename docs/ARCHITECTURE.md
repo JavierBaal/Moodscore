@@ -68,7 +68,7 @@ Where musical intent becomes motion.
 
 - **Mood macros.** Six expressive dimensions, each in `0.0–1.0`:
   `tension`, `darkness`, `density`, `motion`, `distance`, `instability`.
-  Each macro maps to many DSP parameters through curves defined in data, not code, so they can be tuned by ear without recompiling. A target can name many parameters with a `*` pattern (`drone_*/drift`).
+  Each macro maps to many DSP parameters through curves defined in data, not code, so they can be tuned by ear without recompiling. A target can name many parameters with a `*` pattern (`drone_*/drift`), and move over only part of the macro's range with a `span` (`density` brings each drone voice in over its own stretch, low to high). Implemented: `darkness`, `instability`, `density` and `distance`; their defaults reproduce the engine's resting sound exactly. `distance` drives the shared room (size, damping, predelay, wet, and the direct sound's level and air absorption, applied to drones and notes alike), so the note parts recede with the drones while their own parameters stay untouched.
 - **Gestures.** A gesture is a trajectory: a target, a duration, a curve and an optional start offset. Gestures on different parameters run concurrently. A new gesture on a parameter that is already moving starts from wherever that parameter is right now, so changes of mind never cause jumps.
 - **Scenes.** Named snapshots of the macro state and selected raw parameters, stored as JSON.
 

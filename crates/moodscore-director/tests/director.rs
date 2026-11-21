@@ -888,3 +888,84 @@ fn tempo_can_wait_for_a_bar() {
         )
         .is_err());
 }
+
+// ------------------------------------------------------- density, distance
+
+#[test]
+fn at_their_defaults_density_and_distance_leave_the_drone_as_it_was() {
+    let d = director();
+    // The resting drone: root and a quiet fifth, the room as it always was.
+    for (path, v) in [
+        ("drone_1/level", 0.7),
+        ("drone_2/level", 0.3),
+        ("drone_3/level", 0.0),
+        ("drone_6/level", 0.0),
+        ("master/gain", 0.5),
+        ("space/size", 8.0),
+        ("space/predelay", 0.0),
+        ("space/direct", 1.0),
+        ("space/wet", 1.0),
+        ("space/air", 0.0),
+    ] {
+        assert!(
+            (value(&d, path) - v).abs() < 1e-4,
+            "{path}: {}",
+            value(&d, path)
+        );
+    }
+    assert!((value(&d, "space/damping") - 6000.0).abs() < 1.0);
+}
+
+#[test]
+fn density_brings_voices_in_low_to_high() {
+    let levels = |density: f32| {
+        let mut d = director();
+        d.morph_with(0.0, &[("density", density)], 1.0, Curve::Linear, false)
+            .unwrap();
+        d.tick(2.0);
+        (2..=6)
+            .map(|v| value(&d, &format!("drone_{v}/level")))
+            .collect::<Vec<f32>>()
+    };
+    let sounding = |l: &[f32]| l.iter().filter(|&&x| x > 0.01).count();
+    assert_eq!(sounding(&levels(0.0)), 0); // the root alone
+    assert_eq!(sounding(&levels(0.3)), 2);
+    assert_eq!(sounding(&levels(0.5)), 3);
+    assert_eq!(sounding(&levels(1.0)), 5);
+    // Each comes in before the one above it: at 0.65, drone_4 is in,
+    // drone_5 on its way, drone_6 still silent.
+    let half = levels(0.65);
+    assert!(half[2] > 0.29 && half[3] > 0.0 && half[3] < 0.3 && half[4] == 0.0);
+    // A voice set by hand stays where it was put.
+    let mut d = director();
+    d.gesture(0.0, "drone_4/level", 0.1, 0.5, Curve::Linear, 0.0)
+        .unwrap();
+    d.morph_with(0.1, &[("density", 1.0)], 1.0, Curve::Linear, false)
+        .unwrap();
+    d.tick(3.0);
+    assert!((value(&d, "drone_4/level") - 0.1).abs() < 1e-4);
+    assert!(value(&d, "drone_6/level") > 0.2);
+}
+
+#[test]
+fn distance_moves_the_room() {
+    let at = |distance: f32, path: &str| {
+        let mut d = director();
+        d.morph_with(0.0, &[("distance", distance)], 1.0, Curve::Linear, false)
+            .unwrap();
+        d.tick(2.0);
+        value(&d, path)
+    };
+    // Near: a small room answering after a gap, quieter, the direct clear.
+    assert!(at(0.0, "space/size") < 4.0);
+    assert!(at(0.0, "space/predelay") > 30.0);
+    assert!(at(0.0, "space/wet") < 0.6);
+    assert_eq!(at(0.0, "space/direct"), 1.0);
+    // Far: a vast dark room, the direct sound faint and dulled.
+    assert!(at(1.0, "space/size") > 15.0);
+    assert!(at(1.0, "space/damping") < 3500.0);
+    assert!(at(1.0, "space/direct") < 0.5);
+    assert!(at(1.0, "space/air") > 0.99);
+    // It adds to the drones' reverb on top of darkness.
+    assert!(at(1.0, "space/reverb_mix") > at(0.4, "space/reverb_mix") + 0.15);
+}

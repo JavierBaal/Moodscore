@@ -47,15 +47,22 @@ to hand such parameters back to the macro.
 - There are six drone voices, drone_1 to drone_6. At rest only drone_1 (A1, \
 the foundation, with a sub an octave below) and a quiet drone_2 (E2, the \
 fifth) sound. drone_3 to drone_6 wait silent (level 0) on A2, C3, E3 and A3, \
-an open A minor chord. Bring a voice in or out by gliding drone_N/level with \
-`gesture`; retune it with drone_N/pitch (Hz). Building a sound up voice by \
-voice is how it grows bigger or more epic; thinning it out is how it empties.
+an open A minor chord. Building a sound up voice by voice is how it grows \
+bigger or more epic; thinning it out is how it empties: do it with the \
+`density` macro (0 the root alone, 0.15 the drone at rest, 1 all six, voices \
+coming in low to high), one morph instead of a gesture per voice. Use \
+`gesture` on drone_N/level for one particular voice (it then leaves \
+density's hands), and drone_N/pitch (Hz) to retune it.
+- `distance` moves the whole scene near or far, notes included: 0 near and \
+dry (a small room, the direct sound clear), 0.4 the room at rest, 1 far and \
+washed (a vast dark room, the direct sound faint and dulled). Far is also \
+quieter, as it should be.
 - `harmony` makes the voices play chords: give a key, a mode and a \
 progression of Roman-numeral chords with durations, and the engine walks it \
 on its own, looping, each voice gliding to the nearest note of the next chord. \
 Use it when the person asks for harmony, chords, a progression, a key or a \
-change of colour; then bring voices in with drone_N/level so the chord is \
-heard. A voice you retune by hand leaves the harmony until reclaim.
+change of colour; then raise density so the chord is heard (two voices only \
+give root and fifth). A voice you retune by hand leaves the harmony until reclaim.
 - Moodscore keeps a musical clock (tempo and metre, 120 BPM 4/4 until you \
 change it). When the person gives a tempo, a metre or a score, set it with \
 `tempo` and give chord lengths in bars or beats instead of working out \
@@ -139,6 +146,10 @@ pub struct MorphArgs {
     pub darkness: Option<f32>,
     /// Instability, 0.0 to 1.0. 0 is steady and pure; 1 is wavering, beating and seasick.
     pub instability: Option<f32>,
+    /// Density, 0.0 to 1.0: how many drone voices sound. 0 is the root alone, 0.15 the drone at rest (root and fifth), 1 all six; they come in one after another, low to high.
+    pub density: Option<f32>,
+    /// Distance, 0.0 to 1.0: how far away everything sounds, notes included. 0 is near and dry (a small room, the direct sound clear), 0.4 the room at rest, 1 far and washed (a vast dark room, the direct sound faint and dulled).
+    pub distance: Option<f32>,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,
     /// Bars to get there instead of seconds, on the tempo map (a tempo change on the way stretches it).
@@ -617,7 +628,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness, instability. Omitted macros keep doing what they were doing. Parameters set by hand with gesture are left alone unless reclaim is true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
+        description = "Move the mood. Glides one or more mood macros to new values over time; each macro moves several sound parameters together. Macros: darkness (open and airy to closed and murky), instability (steady to seasick), density (how many drone voices sound: 0 the root alone, 1 all six, coming in low to high), distance (near and dry to far and washed, the whole scene, notes included). Omitted macros keep doing what they were doing. Parameters set by hand with gesture are left alone unless reclaim is true. Returns the output, pace, macros (each standing for the parameters it drives) and any hand-set parameters still moving."
     )]
     fn morph(&self, Parameters(args): Parameters<MorphArgs>) -> Result<String, String> {
         let a = actions::prepare_morph(&self.ctx(false), args)?;
@@ -635,7 +646,7 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with gesture on drone_N/level. A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A slash puts a note in the bass: I/C#, IVmaj7/A (it wins over a pedal for that chord). A new plan starts from its first chord now (or on the next beat or downbeat with start_on, or on a given bar with at_bar), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
+        description = "Set a harmonic plan: a key, a mode and a progression of chords the six drone voices walk through on their own, each voice sliding to the nearest note of the next chord. Mode is colour: aeolian dark, dorian bittersweet, phrygian ominous, lydian luminous and floating, mixolydian open and heroic, ionian plain bright, locrian unstable. Voice levels are untouched, so the chord is heard through whichever voices are sounding: bring voices in with the density macro (or gesture on drone_N/level). A pedal holds one note in the bass while chords change above it, a classic way to build tension. Give each chord's length in seconds, or in bars or beats to follow the tempo set with `tempo` (accelerandos and ritardandos included). A slash puts a note in the bass: I/C#, IVmaj7/A (it wins over a pedal for that chord). A new plan starts from its first chord now (or on the next beat or downbeat with start_on, or on a given bar with at_bar), voice-leading from wherever the voices are, so changing key is just another call. Returns the output, pace, harmony (chord now, next chord, seconds to it) and macros."
     )]
     fn harmony(&self, Parameters(args): Parameters<HarmonyArgs>) -> Result<String, String> {
         let a = actions::prepare_harmony(&self.ctx(false), args)?;

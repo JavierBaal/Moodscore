@@ -1,22 +1,47 @@
 {
-  "$comment": "Mood macro mappings. Each macro (0..1) drives several DSP parameters. Edit and restart to retune by ear; no recompiling needed. param: a path, or a pattern where * matches within one segment (drone_*/drift = every voice). curve: 'linear' or 'exp' (equal steps in ratio, for frequencies). mode: 'set' (default; one macro per parameter) or 'add' (an offset on top; any number of macros).",
+  "$comment": "Mood macro mappings. Each macro (0..1) drives several DSP parameters. Edit and restart to retune by ear; no recompiling needed. param: a path, or a pattern where * matches within one segment (drone_*/drift = every voice). curve: 'linear' or 'exp' (equal steps in ratio, for frequencies). mode: 'set' (default; one macro per parameter) or 'add' (an offset on top; any number of macros). span: [low, high] of the macro over which the target moves (default [0, 1]); below it the target holds 'from', above it 'to'.",
   "macros": {
     "darkness": {
       "description": "How dark and heavy the sound is. 0 = open and airy, 1 = closed, low and murky.",
       "default": 0.4,
       "targets": [
-        { "param": "filter/cutoff",    "from": 4200, "to": 140,  "curve": "exp" },
+        { "param": "filter/cutoff", "from": 4200, "to": 140, "curve": "exp" },
         { "param": "filter/resonance", "from": 0.22, "to": 0.5 },
-        { "param": "drone_1/sub",      "from": 0.35, "to": 0.85 },
-        { "param": "space/reverb_mix", "from": 0.3,  "to": 0.5 }
+        { "param": "drone_1/sub", "from": 0.35, "to": 0.85 },
+        { "param": "space/reverb_mix", "from": 0.3, "to": 0.5 }
       ]
     },
     "instability": {
       "description": "How unsteady the drone is. 0 = steady and pure, 1 = wavering, beating and seasick.",
       "default": 0.3,
       "targets": [
-        { "param": "drone_*/drift",  "from": 0.05, "to": 1.0 },
-        { "param": "drone_*/detune", "from": 2,    "to": 22 }
+        { "param": "drone_*/drift", "from": 0.05, "to": 1.0 },
+        { "param": "drone_*/detune", "from": 2, "to": 22 }
+      ]
+    },
+    "density": {
+      "description": "How full the drone is: how many voices sound. 0 = the root alone, 1 = all six voices; they come in one after another, low to high. The default is the drone at rest (root and a quiet fifth).",
+      "default": 0.15,
+      "targets": [
+        { "param": "drone_2/level", "from": 0, "to": 0.3, "span": [0.0, 0.15] },
+        { "param": "drone_3/level", "from": 0, "to": 0.4, "span": [0.15, 0.35] },
+        { "param": "drone_4/level", "from": 0, "to": 0.3, "span": [0.35, 0.55] },
+        { "param": "drone_5/level", "from": 0, "to": 0.32, "span": [0.55, 0.75] },
+        { "param": "drone_6/level", "from": 0, "to": 0.26, "span": [0.75, 0.95] },
+        { "param": "master/gain", "from": 0, "to": -0.06, "span": [0.15, 1.0], "mode": "add" }
+      ]
+    },
+    "distance": {
+      "description": "How far away everything sounds, drones and notes alike. 0 = near and dry: a small room that answers after a short gap, the direct sound clear. 1 = far and washed: a vast dark room, the direct sound faint and dulled by the air. The default is the room as it always was.",
+      "default": 0.4,
+      "targets": [
+        { "param": "space/size", "from": 3, "to": 15.5 },
+        { "param": "space/damping", "from": 9000, "to": 3266, "curve": "exp" },
+        { "param": "space/predelay", "from": 35, "to": 0, "span": [0.0, 0.4] },
+        { "param": "space/wet", "from": 0.5, "to": 1, "span": [0.0, 0.4] },
+        { "param": "space/direct", "from": 1, "to": 0.4, "span": [0.4, 1.0] },
+        { "param": "space/air", "from": 0, "to": 1, "span": [0.4, 1.0] },
+        { "param": "space/reverb_mix", "from": -0.2, "to": 0.3, "mode": "add" }
       ]
     }
   }

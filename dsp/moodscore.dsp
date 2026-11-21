@@ -6,7 +6,9 @@
 // voice's position, so width comes from the oscillators themselves, never
 // from delaying one channel (which would pull the image to the other side).
 // The voices are summed, run through a stereo Moog-style ladder low-pass and
-// a stereo reverb.
+// a stereo reverb. The room can be moved near or far: its size, how dark its
+// tail is, the gap before it answers (predelay), how loud it answers (wet),
+// how loud the direct sound is and how much of its top the air takes away.
 //
 // The note voices (the synth in moodscore-synth) arrive as four inputs: their
 // dry sound (left, right) and what they send to the reverb (left, right).
@@ -54,6 +56,19 @@ cutoff    = hslider("filter/cutoff [unit:Hz] [scale:log]", 900, 40, 12000, 0.1) 
 reso      = hslider("filter/resonance", 0.3, 0, 0.95, 0.001) : si.smoo;
 
 rev_mix   = hslider("space/reverb_mix", 0.35, 0, 1, 0.001) : si.smoo;
+// The room. At their defaults the room is exactly the one Moodscore always
+// had: an 8-second tail darkening above 6 kHz, no predelay, the direct
+// sound untouched.
+// si.smoo starts from 0, and a room of size 0 (or a tail darkening above
+// 0 Hz) is no room at all: smooth the distance from the default instead,
+// so each starts exactly where it should.
+from_default(d) = -(d) : si.smoo : +(d);
+size      = hslider("space/size [unit:s]", 8, 1, 20, 0.01) : from_default(8);
+damping   = hslider("space/damping [unit:Hz] [scale:log]", 6000, 1500, 12000, 1) : from_default(6000);
+predelay  = hslider("space/predelay [unit:ms]", 0, 0, 80, 0.01) : si.smoo;
+direct    = hslider("space/direct", 1, 0, 1, 0.001) : from_default(1);
+wet_gain  = hslider("space/wet", 1, 0, 1.5, 0.001) : from_default(1);
+air       = hslider("space/air", 0, 0, 1, 0.001) : si.smoo;
 
 master    = hslider("master/gain", 0.5, 0, 1, 0.001) : si.smoo;
 
@@ -101,12 +116,25 @@ spread = *(0.9), *(0.9);
 
 // ------------------------------------------------------------------- space
 
-wet = re.zita_rev1_stereo(0, 200, 6000, 6, 8, 48000);
+// The tail: low frequencies decay in three quarters of `size`, the highs
+// above `damping` faster. The predelay is interpolated, so it can glide.
+pre = de.fdelay(8192, predelay * ma.SR * 0.001);
+wet = (pre, pre) : re.zita_rev1_stereo(0, 200, damping, size * 0.75, size, 48000)
+    : *(wet_gain), *(wet_gain);
+
+// The air between the listener and a far source swallows the highs of the
+// direct sound: two gentle poles, from none (air 0, an exact pass-through)
+// to a darkening around 2 kHz (air 1).
+air_pole = air * exp(-2 * ma.PI * 3000 / ma.SR);
+absorb = fi.pole(air_pole) : *(1 - air_pole) : fi.pole(air_pole) : *(1 - air_pole);
+near = absorb : *(direct);
 
 // Drones (dl, dr) keep their dry/wet balance; notes add their dry sound and
 // their send. The reverb is linear, so the drones sound exactly as before.
+// Distance acts on everything: the direct sound of drones and notes alike
+// goes through the air and the direct level.
 room(dl, dr, nl, nr, sl, sr) =
-    (dl * (1 - rev_mix) + nl, dr * (1 - rev_mix) + nr),
+    ((dl * (1 - rev_mix) + nl : near), (dr * (1 - rev_mix) + nr : near)),
     ((dl * rev_mix + sl, dr * rev_mix + sr) : wet)
     :> _, _;
 

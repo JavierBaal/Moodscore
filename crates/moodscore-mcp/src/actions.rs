@@ -252,6 +252,12 @@ pub fn prepare_morph(ctx: &Ctx, a: MorphArgs) -> Result<Action, String> {
     if let Some(v) = a.instability {
         changes.push(("instability", v));
     }
+    if let Some(v) = a.density {
+        changes.push(("density", v));
+    }
+    if let Some(v) = a.distance {
+        changes.push(("distance", v));
+    }
     let over = over(a.over, a.over_bars, f32::MAX)?;
     let curve: Option<Curve> = a
         .curve

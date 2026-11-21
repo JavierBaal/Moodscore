@@ -77,7 +77,7 @@ Set a harmonic plan. The six drone voices walk the progression on their own, eac
 - **`pedal`**: a note held in the bass under every chord (`A`, or `E1`…`E2` with an octave). Without it the bass voice (`drone_1`) follows each chord's root.
 - **`glide`**: seconds each voice takes to reach its next note (default 3); **`curve`** shapes it. With short chords, lower it so each chord arrives before the next.
 - Voicing: `drone_1` is the bass (E1–E2), `drone_2`…`drone_6` share the chord (E2–A4). Every chord tone is covered when there are enough voices (dropping the fifth first when there aren't); extra voices double the root or fifth, or whatever moves least.
-- Harmony moves pitches only, never levels: the chord sounds through whichever voices are up (bring them in with `gesture` on `drone_N/level`).
+- Harmony moves pitches only, never levels: the chord sounds through whichever voices are up (bring them in with the `density` macro, or `gesture` on `drone_N/level`).
 - **Ownership**: harmony takes every voice pitch nobody has set by hand. A pitch retuned with `gesture` leaves the harmony and stays put (`get_state` shows it as `manual` with `held_from: ["harmony"]`) until a `harmony` call with `"reclaim": true`.
 - A new call replaces the plan and starts now from its first chord, voice-leading from wherever the voices are, so changing key or mode mid-piece is just another call. A plan that waits for a later beat (`start_on`, `at_bar`) lets the current one walk on until then (the state shows it under `harmony.then`), and the sequencer already sees the chords coming. `{ "stop": true }` stops walking: voices stay on their notes and become free.
 - The state reports `harmony`: key, the chord sounding (`symbol`, `name`, `notes`), the `next` chord, `seconds_to_next`, `position` (e.g. `"2/4"`), `loop` and `pedal`.
@@ -257,12 +257,16 @@ Move one or more mood macros toward new values. Parameters set by hand with `ges
 }
 ```
 
-Macros: `darkness` ✅, `instability` ✅; `tension`, `density`, `motion`, `distance`, `urgency` (Phase 2).
+Macros: `darkness` ✅, `instability` ✅, `density` ✅, `distance` ✅; `tension`, `motion`, `urgency` (Phase 2).
 
-| Macro | 0 | 1 | Drives |
-|---|---|---|---|
-| `darkness` | open and airy | closed, low and murky | filter cutoff and resonance, sub, reverb |
-| `instability` | steady and pure | wavering, beating, seasick | pitch drift and detune of every drone voice | Omitted macros keep moving (or stay) as they were.
+| Macro | 0 | 1 | Default | Drives |
+|---|---|---|---|---|
+| `darkness` | open and airy | closed, low and murky | 0.4 | filter cutoff and resonance, sub, reverb |
+| `instability` | steady and pure | wavering, beating, seasick | 0.3 | pitch drift and detune of every drone voice |
+| `density` | the root alone | all six voices | 0.15 (root and a quiet fifth, the drone at rest) | `drone_2` … `drone_6` levels, each over its own stretch of the macro (low to high: 2 by 0.15, 3 by 0.35, 4 by 0.55, 5 by 0.75, 6 by 0.95), and a slight trim of the master as it fills |
+| `distance` | near and dry | far and washed | 0.4 (the room as it always was) | the room: `space/size` (3 to 15.5 s), `space/damping` (9 to 3.3 kHz), `space/predelay` (35 ms near, none from 0.4), `space/wet` (half near), `space/direct` (down to 0.4 far) and `space/air` (the highs of the direct sound, far), and adds to `space/reverb_mix` |
+
+Omitted macros keep moving (or stay) as they were. At their defaults `density` and `distance` leave the sound exactly as it was before they existed. `distance` acts on the shared room, so the note parts move with the drones without any of their own parameters changing (their `part/reverb_send` stays theirs). A drone level set by hand with `gesture` leaves `density`'s hands like any hand-set parameter.
 
 ### `set_scene`
 
@@ -296,7 +300,9 @@ Move a single raw parameter along a trajectory. For when a macro is too coarse. 
 
 #### Voices ✅ Phase 2
 
-Six drone voices, `drone_1` … `drone_6`, each with `pitch` (Hz), `level`, `detune` (cents) and `drift`; `drone_1` also has `sub`. At rest `drone_1` (A1) and a quiet `drone_2` (E2) sound; `drone_3` … `drone_6` wait at level 0 on A2, C3, E3, A3 (an open A minor chord). Until `harmony` and `voice` exist, bring voices in and out and retune them with `gesture` on `drone_N/level` and `drone_N/pitch`.
+Six drone voices, `drone_1` … `drone_6`, each with `pitch` (Hz), `level`, `detune` (cents) and `drift`; `drone_1` also has `sub`. At rest `drone_1` (A1) and a quiet `drone_2` (E2) sound; `drone_3` … `drone_6` wait at level 0 on A2, C3, E3, A3 (an open A minor chord). Bring voices in and out with the `density` macro; for one particular voice, `gesture` on `drone_N/level` (it then leaves `density`'s hands); retune with `drone_N/pitch` (or let `harmony` do it).
+
+The room (shared by drones and notes): `space/reverb_mix` (the drones' share of reverb), `space/size` (tail, s), `space/damping` (Hz above which the tail darkens), `space/predelay` (ms before the room answers), `space/wet` (how loud it answers), `space/direct` (the direct sound of everything) and `space/air` (how much of its top the air takes, 0 none). `distance` drives them all.
 
 ### `voice`
 

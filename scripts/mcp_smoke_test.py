@@ -172,13 +172,13 @@ call("morph", {"darkness": 0.1, "over": 0})
 time.sleep(0.3)
 reverb = next(p for p in json.loads(call("get_state", {})[1])["params"] if p["path"] == "space/reverb_mix")
 check(
-    reverb["owner"] == "manual" and abs(reverb["value"] - 0.7) < 1e-3 and reverb["held_from"] == ["darkness"],
+    reverb["owner"] == "manual" and abs(reverb["value"] - 0.7) < 1e-3 and "darkness" in reverb["held_from"],
     f"a morph leaves a hand-set parameter alone ({reverb['owner']}, {reverb['value']})",
 )
 call("morph", {"darkness": 0.1, "over": 0, "reclaim": True})
 time.sleep(0.3)
 reverb = next(p for p in json.loads(call("get_state", {})[1])["params"] if p["path"] == "space/reverb_mix")
-check(reverb["owner"] == "macro:darkness" and "held_from" not in reverb, "reclaim: true takes it back")
+check(reverb["owner"] == "macro:darkness+distance" and "held_from" not in reverb, "reclaim: true takes it back")
 
 import math
 
@@ -404,6 +404,24 @@ check(not err and json.loads(text)["sections"]["loop"] and "sections" not in jso
 call("sequence", {"part": 1, "stop": True, "start_on": "now"})
 call("harmony", {"stop": True})
 call("start", {"over": 0.2})
+
+# density and distance.
+err, text = call("morph", {"density": 1.0, "distance": 1.0, "over": 0.2})
+time.sleep(0.4)
+st = json.loads(call("get_state", {})[1])
+p = {x["path"]: x for x in st["params"]}
+names = {m["name"] for m in st["macros"]}
+check(not err and {"density", "distance"} <= names and p["drone_6/level"]["target"] > 0.2
+      and p["space/direct"]["target"] < 0.5 and p["space/size"]["target"] > 15,
+      f"density fills the drone, distance moves the room ({p['drone_6/level']['target']}, {p['space/direct']['target']})")
+err, text = call("morph", {"density": 0.15, "distance": 0.4, "over": 0.2})
+time.sleep(0.4)
+st = json.loads(call("get_state", {})[1])
+p = {x["path"]: x for x in st["params"]}
+check(p["drone_6/level"]["target"] == 0 and p["space/direct"]["target"] == 1 and p["space/predelay"]["target"] == 0,
+      "their defaults are the resting sound")
+err, text = call("morph", {"density": 1.5})
+check(err and "density" in text, "density out of range explained")
 
 # Ears.
 err, text = call("list_presets", {})
