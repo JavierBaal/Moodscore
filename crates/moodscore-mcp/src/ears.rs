@@ -237,18 +237,24 @@ pub fn listen(
     Ok(report)
 }
 
-/// Longest a `listen` waits for a section to end.
-pub const SECTION_WAIT: f64 = 45.0;
+/// What listening to a section came to.
+pub enum SectionHeard {
+    /// Measured, with what was heard.
+    Heard(Box<Report>, serde_json::Value),
+    /// It has not ended yet: waited this long, it ends in so many seconds.
+    NotYet { waited: f64, ends_in: f64 },
+}
 
 /// Measure one section of the sections, the latest time it played, waiting
-/// (up to [`SECTION_WAIT`]) for it to end if it plays now or is about to.
-/// Also says what was heard.
+/// for it to end if it plays now or is still to come: up to
+/// [`crate::WAIT_MAX`] in one call, and if it ends later, it says so after
+/// waiting that long, so asking again carries on.
 pub fn listen_section(
     c: &Conductor,
     name: &str,
     pitch_range: Option<(f32, f32)>,
     target: Option<&Target>,
-) -> Result<(Report, serde_json::Value), String> {
+) -> Result<SectionHeard, String> {
     let mut waited = 0.0;
     let asked_at = c.now();
     let (left, right, length, kept, ended_ago) = loop {
@@ -260,14 +266,20 @@ pub fn listen_section(
                 kept,
                 ended_ago,
             } => break (left, right, length, kept, ended_ago),
-            SectionWhen::Ends { in_seconds, length } => {
+            SectionWhen::Ends { in_seconds, .. } => {
                 // A little past its end, for the engine's sound to come back.
                 let wait = in_seconds + 0.15;
-                if waited + wait > SECTION_WAIT {
-                    return Err(format!(
-                        "{name} ends in {in_seconds:.0} s (it lasts {length:.0} s): too long to \
-                         wait; listen with section then"
-                    ));
+                let left = crate::WAIT_MAX - waited;
+                if wait > left {
+                    // Wait as long as one call may, then say how far it is.
+                    // (Once the section is under way, a later ask finds the
+                    // same occurrence: it is the one playing.)
+                    pause(left);
+                    waited += left;
+                    return Ok(SectionHeard::NotYet {
+                        waited,
+                        ends_in: (in_seconds - left).max(0.0),
+                    });
                 }
                 pause(wait);
                 waited += wait;
@@ -309,11 +321,11 @@ pub fn listen_section(
         )
         .into();
     }
-    Ok((report, heard))
+    Ok(SectionHeard::Heard(Box::new(report), heard))
 }
 
 /// Wait without holding up the server's other work.
-fn pause(seconds: f64) {
+pub fn pause(seconds: f64) {
     let d = std::time::Duration::from_secs_f64(seconds.max(0.0));
     match tokio::runtime::Handle::try_current() {
         Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {

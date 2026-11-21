@@ -90,7 +90,7 @@ tools = {t["name"] for t in tool_list}
 check(
     tools == {"start", "release", "morph", "gesture", "set_pace", "harmony", "tempo", "get_state",
              "patch", "play_notes", "sequence", "sections", "list_presets", "save_preset", "audition", "listen",
-             "analyze_file"},
+             "analyze_file", "wait"},
     f"tools/list -> {sorted(tools)}",
 )
 
@@ -433,6 +433,17 @@ check(not err3 and 1.5 < h.get("waited", 0) < 6 and abs(h.get("seconds", 0) - 4.
       f"listen waits for a section playing or to come, then measures it ({h or text3[:100]})")
 err2, text2 = call("sections", {"stop": True})
 check(not err and json.loads(text)["sections"]["loop"] and "sections" not in json.loads(text2), "loop and stop")
+# wait, instead of sleeping.
+call("sections", {"downbeat": True, "sections": [{"name": "w1", "bars": 1}, {"name": "w2", "bars": 1}]})
+err, text = call("wait", {"until_section_starts": "w2"})
+w = json.loads(text) if not err else {}
+check(not err and w["done"] and w.get("section", {}).get("name") == "w2", f"wait until a section begins ({text[:120]})")
+err, text = call("wait", {"until_section_ends": "w2"})
+check(not err and json.loads(text)["done"] and "section" not in json.loads(text), f"wait until a section ends ({text[:120]})")
+err, text = call("wait", {"until_section_starts": "nope"})
+check(err and "no section" in text, "wait for an unknown section is explained")
+err, text = call("wait", {"seconds": 0.3, "until_bar": 3})
+check(err, "wait takes one moment")
 # A tempo change on the way moves the end: listen still gets the whole section.
 call("sections", {"sections": [{"name": "p", "bars": 1, "actions": [{"tempo": {"bpm": 100}}]}, {"name": "q", "bars": 1}]})
 err, text = call("listen", {"section": "q"})

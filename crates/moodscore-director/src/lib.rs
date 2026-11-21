@@ -1692,6 +1692,22 @@ impl Conductor {
     }
 
     /// What the cue list is doing, if one runs.
+    /// When the section called `name` plays, on the conductor's clock: the
+    /// one playing now if it is that one, else the next to come in the list
+    /// running. An error names the sections there are.
+    pub fn section_ahead(&self, name: &str) -> Result<(f64, f64), String> {
+        let cues = self.cues();
+        let Some(r) = cues.as_ref() else {
+            return Err("no sections are running".into());
+        };
+        r.next_occurrence(name, &self.tempo()).ok_or_else(|| {
+            format!(
+                "no section called {name:?} is playing or to come; the sections: {}",
+                r.names().join(", ")
+            )
+        })
+    }
+
     pub fn cue_state(&self) -> Option<cues::CueState> {
         let cues = self.cues();
         let r = cues.as_ref()?;

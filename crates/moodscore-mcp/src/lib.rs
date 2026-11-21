@@ -90,7 +90,9 @@ bars from 1 where the first begins. The report lists the bar each section \
 begins on. To change what's coming, call `sections` again with the \
 sections still to come (at_bar); what is sounding plays on. Watch get_state \
 sections for the section and bar now; to hear how a section came out, listen \
-with its name (it waits for the section to end).
+with its name (it waits for the section to end). To act at a point in the \
+piece, use `wait` (until a bar, or a section begins or ends), never a sleep: \
+it works where there is no terminal, and follows the tempo.
 - If the person sets a general pace (\"everything slow today\", \"short and \
 direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
 call. Give `over` or `curve` explicitly only when a single move should differ \
@@ -387,12 +389,24 @@ pub struct AuditionArgs {
 pub struct ListenArgs {
     /// Seconds of the live output to measure, 1 to 60. Default 5.
     pub seconds: Option<f64>,
-    /// Measure a section of the sections instead, by name: the latest time it played, from its first downbeat to the next section's. If it is playing or about to (ending within 45 s), listen waits for it to end, then measures it.
+    /// Measure a section of the sections instead, by name: the latest time it played, from its first downbeat to the next section's. If it is playing or still to come, listen waits for it to end, then measures it; one call waits up to 45 s, and if it ends later the answer says so (not_yet): call again to keep waiting.
     pub section: Option<String>,
     /// [low, high] Hz to look for a pitch in. Default [30, 2000].
     pub pitch_range: Option<(f32, f32)>,
     /// Compare with a target.
     pub target: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WaitArgs {
+    /// Wait for the downbeat of this bar (the state shows the bar now in tempo.bar).
+    pub until_bar: Option<i64>,
+    /// Wait for this section of the sections to begin (at once if it is playing).
+    pub until_section_starts: Option<String>,
+    /// Wait for this section of the sections to end.
+    pub until_section_ends: Option<String>,
+    /// Wait this many seconds.
+    pub seconds: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -450,6 +464,10 @@ pub struct ReleaseArgs {
 const DEFAULT_START: f32 = 3.0;
 const DEFAULT_RELEASE: f32 = 8.0;
 const MAX_FADE: f32 = 600.0;
+
+/// Longest one call waits (`wait`, `listen` with a section): MCP clients
+/// give up on a call after about a minute.
+pub const WAIT_MAX: f64 = 45.0;
 
 /// `start_in`, or the seconds until bar `at_bar` (not both).
 fn wait_for(c: &Conductor, start_in: Option<f32>, at_bar: Option<i64>) -> Result<f32, String> {
@@ -792,7 +810,100 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something. With section, it measures exactly one section of the sections (the latest time it played, up to 60 s of it), waiting for it to end if it is playing or about to: no sleeping or counting seconds."
+        description = "Wait while the music plays: until a bar's downbeat (until_bar), until a section of the sections begins or ends (until_section_starts, until_section_ends), or some seconds. Use it instead of sleeping, to do something at a point in the piece (change the sections still to come while one plays, listen once it is done). One call waits up to 45 s; if the moment is further off, the answer says how much is left (done: false): call again. A tempo change on the way is followed. Returns how long it waited, whether it got there, and the bar and section now."
+    )]
+    fn wait(&self, Parameters(args): Parameters<WaitArgs>) -> Result<String, String> {
+        let given = [
+            args.until_bar.is_some(),
+            args.until_section_starts.is_some(),
+            args.until_section_ends.is_some(),
+            args.seconds.is_some(),
+        ];
+        if given.iter().filter(|g| **g).count() != 1 {
+            return Err(
+                "give one of until_bar, until_section_starts, until_section_ends or seconds".into(),
+            );
+        }
+        let c = &self.conductor;
+        let asked = c.now();
+        if let Some(s) = args.seconds {
+            if !s.is_finite() || s < 0.0 {
+                return Err("seconds must be 0 or more".into());
+            }
+        }
+        // When the moment is, worked out again as the wait goes (a tempo
+        // change can move it). A section is the occurrence first found: once
+        // it has gone by, a loop coming round to it again does not count.
+        let mut first: Option<f64> = None;
+        let mut target = || -> Result<Option<f64>, String> {
+            if let Some(n) = args.until_bar {
+                return Ok(Some(c.with_director(|d| d.tempo().time_of_bar(n))));
+            }
+            let (name, end) = match (&args.until_section_starts, &args.until_section_ends) {
+                (Some(n), _) => (n, false),
+                (_, Some(n)) => (n, true),
+                _ => return Ok(Some(asked + args.seconds.unwrap_or(0.0))),
+            };
+            match c.section_ahead(name) {
+                Ok((start, finish)) => {
+                    let start0 = *first.get_or_insert(start);
+                    // Another occurrence: the one waited for has gone by.
+                    if start > start0 + 0.5 {
+                        return Ok(None);
+                    }
+                    Ok(Some(if end { finish } else { start }))
+                }
+                // It played and the list moved on (or stopped).
+                Err(_) if first.is_some() => Ok(None),
+                Err(e) => Err(e),
+            }
+        };
+        let mut done = false;
+        let mut left = 0.0;
+        loop {
+            let now = c.now();
+            let waited = now - asked;
+            match target()? {
+                Some(at) if at - now > 0.005 => left = at - now,
+                _ => {
+                    done = true;
+                    break;
+                }
+            }
+            let budget = WAIT_MAX - waited;
+            if budget <= 0.0 {
+                break;
+            }
+            ears::pause(left.min(budget).min(1.0));
+        }
+        if done {
+            // A moment for the conductor to catch up (a section that has
+            // just begun shows in the answer).
+            ears::pause(0.03);
+        }
+        let now = c.now();
+        let bar = c.with_director(|d| d.tempo().position(now + 1e-6).bar);
+        let mut v = serde_json::json!({
+            "waited": ((now - asked) * 10.0).round() / 10.0,
+            "done": done,
+            "bar": bar,
+        });
+        if !done {
+            v["left"] = ((left * 10.0).round() / 10.0).into();
+            v["note"] = "not there yet: call wait again with the same".into();
+        }
+        if let Some(st) = c.cue_state() {
+            v["section"] = serde_json::json!({
+                "name": st.section,
+                "bar": st.bar,
+                "of_bars": st.of_bars,
+            });
+        }
+        Ok(serde_json::to_string_pretty(&v).unwrap_or_default())
+    }
+
+    #[tool(
+        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something. With section, it measures exactly one section of the sections (the latest time it played, up to 60 s of it), waiting for it to end if it is playing or still to come (up to 45 s a call; if not_yet, call again): no sleeping or counting seconds."
     )]
     fn listen(&self, Parameters(args): Parameters<ListenArgs>) -> Result<String, String> {
         if let Some(name) = args.section.as_deref() {
@@ -804,12 +915,28 @@ impl MoodscoreServer {
                 .as_deref()
                 .map(moodscore_ear::Target::find)
                 .transpose()?;
-            let (report, heard) =
-                ears::listen_section(&self.conductor, name, args.pitch_range, target.as_ref())?;
-            let mut v = moodscore_ear::to_json(&report);
-            if let Some(o) = v.as_object_mut() {
-                o.insert("heard".into(), heard);
-            }
+            let v = match ears::listen_section(
+                &self.conductor,
+                name,
+                args.pitch_range,
+                target.as_ref(),
+            )? {
+                ears::SectionHeard::Heard(report, heard) => {
+                    let mut v = moodscore_ear::to_json(&report);
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert("heard".into(), heard);
+                    }
+                    v
+                }
+                ears::SectionHeard::NotYet { waited, ends_in } => serde_json::json!({
+                    "section": name,
+                    "not_yet": format!(
+                        "waited {waited:.0} s; it ends in {ends_in:.0} s: call listen with \
+                         section {name:?} again to keep waiting"
+                    ),
+                    "ends_in": (ends_in * 10.0).round() / 10.0,
+                }),
+            };
             return Ok(serde_json::to_string_pretty(&v).unwrap_or_default());
         }
         let seconds = args.seconds.unwrap_or(5.0);

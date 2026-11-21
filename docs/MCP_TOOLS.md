@@ -227,6 +227,18 @@ Lay out the piece as sections the engine plays on its own, one after another. On
 - **Changing course**: a new call replaces what has not happened yet; what is sounding plays on until a section changes it. To change the rest of a piece, send the sections still to come with `at_bar`. `{ "stop": true }` ends the list.
 - The state shows `sections`: the `section` playing, its `bar` of `of_bars`, the `next` and `next_in` seconds (or `ends_in`), `loop`, every section with the bar it begins on in this lap (`[{name, bar}]`: the bar to give `at_bar` when changing course, or to `listen` to it), and `errors` (an action that failed when its moment came: a sequence refused for lack of harmony, say).
 
+### `wait` ✅
+
+Wait while the music plays, instead of sleeping: to do something at a point in the piece (change the sections still to come while one plays, listen once one is done).
+
+```json
+{ "until_section_starts": "build" }
+```
+
+- One of **`until_bar`** (that bar's downbeat), **`until_section_starts`**, **`until_section_ends`** (a section of the list running: the one playing, or the next to come; a loop coming round again does not count) or **`seconds`**. A tempo change on the way is followed.
+- One call waits up to 45 s (MCP clients give up on a call after about a minute). If the moment is further off, the answer has `done: false` and `left` seconds: call again with the same.
+- Returns `waited`, `done`, the `bar` now and the `section` playing (its name, bar and length).
+
 ### `pulse`
 
 Set the pulse voice's step pattern and sound. Patterns loop in time with the tempo; the engine plays them sample-accurately.
@@ -339,7 +351,7 @@ Claude's ears for its own sounds: render a note part's current sound playing a p
 
 The same measurements on the last `seconds` (1–60, default 5) of the live output: the whole mix as it sounds. Without notes to go by, the pitch heard is tracked instead (`pitch`: held notes, glides, wobble, the longest note's harmonics; `pitch_range` sets where to look). `target` compares.
 
-Or **`section`**: one section of the `sections`, by name, from its first downbeat to the next section's, the latest time it played. If it is playing or still to come and ends within 45 s, `listen` waits for it to end and then measures it, so checking a section is one call, with no sleeping or counting seconds. `heard` says the section, the seconds measured and how long it waited; the last 60 s of output are kept, so of a longer section only its end is measured (`heard.note` says so).
+Or **`section`**: one section of the `sections`, by name, from its first downbeat to the next section's, the latest time it played. If it is playing or still to come, `listen` waits for it to end and then measures it, so checking a section takes no sleeping or counting seconds. One call waits up to 45 s; if the section ends later, the answer is `not_yet` with `ends_in`, and asking again keeps waiting. `heard` says the section, the seconds measured and how long it waited; the last 60 s of output are kept, so of a longer section only its end is measured (`heard.note` says so).
 
 ### `analyze_file` ✅
 
