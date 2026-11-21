@@ -4,7 +4,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use moodscore_director::sequence::{Pattern, Runner};
-use moodscore_director::{Conductor, Curve, StartOn, TempoMap};
+use moodscore_director::{Conductor, Curve, SectionWhen, StartOn, TempoMap};
 use moodscore_ear::{analyze, Audio, NoteSpan, Options, Report, Target};
 use moodscore_engine::{render_part_offline, synth_params::P, NoteEvent};
 
@@ -235,6 +235,91 @@ pub fn listen(
         report.comparison = Some(t.compare(&report));
     }
     Ok(report)
+}
+
+/// Longest a `listen` waits for a section to end.
+pub const SECTION_WAIT: f64 = 45.0;
+
+/// Measure one section of the sections, the latest time it played, waiting
+/// (up to [`SECTION_WAIT`]) for it to end if it plays now or is about to.
+/// Also says what was heard.
+pub fn listen_section(
+    c: &Conductor,
+    name: &str,
+    pitch_range: Option<(f32, f32)>,
+    target: Option<&Target>,
+) -> Result<(Report, serde_json::Value), String> {
+    let mut waited = 0.0;
+    let (left, right, length, kept, ended_ago) = loop {
+        match c.section_to_hear(name, waited > 0.0)? {
+            SectionWhen::Played {
+                left,
+                right,
+                length,
+                kept,
+                ended_ago,
+            } => break (left, right, length, kept, ended_ago),
+            SectionWhen::Ends { in_seconds, length } => {
+                // A little past its end, for the engine's sound to come back.
+                let wait = in_seconds + 0.15;
+                if waited + wait > SECTION_WAIT {
+                    return Err(format!(
+                        "{name} ends in {in_seconds:.0} s (it lasts {length:.0} s): too long to \
+                         wait; listen with section then"
+                    ));
+                }
+                pause(wait);
+                waited += wait;
+            }
+        }
+    };
+    let sr = c.engine().sample_rate();
+    if left.len() < sr as usize / 4 {
+        return Err(format!(
+            "{name} ended {ended_ago:.0} s ago; only the last {} s are kept",
+            moodscore_director::HEARD_SECONDS
+        ));
+    }
+    let mut opts = Options::default();
+    if let Some(p) = pitch_range {
+        opts.pitch_range = p;
+    }
+    let mut report = analyze(
+        &Audio {
+            sample_rate: sr,
+            left,
+            right,
+        },
+        &opts,
+    );
+    if let Some(t) = target {
+        report.comparison = Some(t.compare(&report));
+    }
+    let round = |x: f64| (x * 100.0).round() / 100.0;
+    let mut heard = serde_json::json!({
+        "section": name,
+        "seconds": round(kept),
+        "waited": round(waited),
+    });
+    if kept + 0.05 < length {
+        heard["note"] = format!(
+            "only the last {:.1} s of its {:.1} s were still kept",
+            kept, length
+        )
+        .into();
+    }
+    Ok((report, heard))
+}
+
+/// Wait without holding up the server's other work.
+fn pause(seconds: f64) {
+    let d = std::time::Duration::from_secs_f64(seconds.max(0.0));
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| std::thread::sleep(d))
+        }
+        _ => std::thread::sleep(d),
+    }
 }
 
 pub struct FileRequest {

@@ -405,7 +405,17 @@ check(st.get("sections", {}).get("section") == "c" and not st["output"]["playing
 time.sleep(2.0)
 st = json.loads(call("get_state", {})[1])
 check("sections" not in st, f"the list is done when its last section ends ({st.get('sections')})")
+err, text = call("listen", {"section": "b"})
+h = json.loads(text).get("heard", {}) if not err else {}
+check(not err and abs(h.get("seconds", 0) - 2.0) < 0.05 and h.get("waited") == 0,
+      f"listen measures a section that played, exactly its bar at 120 BPM ({h or text[:100]})")
+err, text = call("listen", {"section": "zz"})
+check(err and "a, b, c" in text, f"an unknown section is explained ({text[:100]})")
 err, text = call("sections", {"loop": True, "sections": [{"name": "x", "bars": 2, "actions": [{"set_pace": {"over": 3}}]}]})
+err3, text3 = call("listen", {"section": "x"})
+h = json.loads(text3).get("heard", {}) if not err3 else {}
+check(not err3 and 1.5 < h.get("waited", 0) < 6 and abs(h.get("seconds", 0) - 4.0) < 0.05,
+      f"listen waits for a section playing or to come, then measures it ({h or text3[:100]})")
 err2, text2 = call("sections", {"stop": True})
 check(not err and json.loads(text)["sections"]["loop"] and "sections" not in json.loads(text2), "loop and stop")
 call("sequence", {"part": 1, "stop": True, "start_on": "now"})

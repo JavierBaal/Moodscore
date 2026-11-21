@@ -1267,12 +1267,53 @@ pub struct Conductor {
     line: Arc<Mutex<Option<FrameLine>>>,
     /// The cue list running, if any.
     cues: Arc<Mutex<Option<cues::Running>>>,
-    /// The last [`HEARD_SECONDS`] of output, interleaved stereo, for `listen`.
-    heard: Arc<Mutex<std::collections::VecDeque<f32>>>,
+    /// The last [`HEARD_SECONDS`] of output, for `listen`.
+    heard: Arc<Mutex<Heard>>,
+    /// The sections that have played, oldest first, for listening back.
+    played: Arc<Mutex<std::collections::VecDeque<Played>>>,
+}
+
+/// The output kept for listening back: interleaved stereo, and the engine
+/// frame just after its last sample.
+#[derive(Default)]
+struct Heard {
+    samples: std::collections::VecDeque<f32>,
+    end_frame: u64,
+}
+
+/// A section that played (or plays now): when, on the clock and in frames.
+#[derive(Clone, Debug)]
+struct Played {
+    name: String,
+    start: f64,
+    start_frame: u64,
+    /// Open while it plays.
+    end: Option<(f64, u64)>,
+}
+
+/// Most sections kept in the log.
+const PLAYED_KEPT: usize = 64;
+
+/// Where a section stands for listening to it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SectionWhen {
+    /// It plays now or is still to come: seconds until it ends, and its
+    /// length.
+    Ends { in_seconds: f64, length: f64 },
+    /// It has played: its sound, as left and right, its length in seconds,
+    /// the seconds of it kept (less than its length if it began too long
+    /// ago) and how long ago it ended.
+    Played {
+        left: Vec<f32>,
+        right: Vec<f32>,
+        length: f64,
+        kept: f64,
+        ended_ago: f64,
+    },
 }
 
 /// Seconds of output kept for listening back.
-pub const HEARD_SECONDS: usize = 30;
+pub const HEARD_SECONDS: usize = 60;
 
 /// How far ahead notes are handed to the engine.
 const NOTE_LOOKAHEAD: f64 = 0.2;
@@ -1340,7 +1381,8 @@ impl Conductor {
             sequences: Arc::new(Mutex::new(Vec::new())),
             line: Arc::new(Mutex::new(None)),
             cues: Arc::new(Mutex::new(None)),
-            heard: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            heard: Arc::new(Mutex::new(Heard::default())),
+            played: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         let loop_c = c.clone();
         let capture = c.engine.take_capture();
@@ -1357,12 +1399,21 @@ impl Conductor {
         while self.running.load(Ordering::Relaxed) {
             if let Some(cap) = &mut capture {
                 let mut heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+                let mut got = 0u64;
                 while let Ok(s) = cap.pop() {
-                    heard.push_back(s);
+                    heard.samples.push_back(s);
+                    got += 1;
                 }
-                let extra = heard.len().saturating_sub(keep);
+                heard.end_frame += got / 2;
+                // The capture drops whole blocks if nobody drains it: if
+                // the count has fallen far behind, take the engine's word.
+                let rendered = self.engine.frames_rendered();
+                if rendered > heard.end_frame + self.engine.sample_rate() as u64 / 2 {
+                    heard.end_frame = rendered;
+                }
+                let extra = heard.samples.len().saturating_sub(keep);
                 // Whole frames only, so left and right stay paired.
-                heard.drain(..extra - extra % 2);
+                heard.samples.drain(..extra - extra % 2);
             }
             let now = self.now();
             {
@@ -1502,7 +1553,121 @@ impl Conductor {
     /// Stop the cue list: nothing more of it happens; what it set going
     /// plays on.
     pub fn stop_cues(&self) {
-        *self.cues() = None;
+        if self.cues().take().is_some() {
+            self.log_section(None, self.now());
+        }
+    }
+
+    /// Note in the log that a section began at `at` (or, with no name,
+    /// that the one playing ended there).
+    fn log_section(&self, name: Option<String>, at: f64) {
+        let frame = (self.frame_line())(at);
+        let mut played = self.played.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(last) = played.back_mut() {
+            if last.end.is_none() {
+                last.end = Some((at, frame));
+            }
+        }
+        if let Some(name) = name {
+            if played.len() == PLAYED_KEPT {
+                played.pop_front();
+            }
+            played.push_back(Played {
+                name,
+                start: at,
+                start_frame: frame,
+                end: None,
+            });
+        }
+    }
+
+    /// Where the section called `name` stands for listening to it: still
+    /// to end (playing, or to come in the list running), or played (the
+    /// latest time), with its sound if it is still kept. With
+    /// `played_only`, the time it last played even if it comes round again
+    /// (after waiting for a looping section to end). An error says which
+    /// sections there are.
+    pub fn section_to_hear(&self, name: &str, played_only: bool) -> Result<SectionWhen, String> {
+        let now = self.now();
+        let names = {
+            let cues = self.cues();
+            let tempo = self.tempo();
+            if let Some(r) = cues.as_ref() {
+                if let Some((start, end)) = r.next_occurrence(name, &tempo).filter(|_| !played_only)
+                {
+                    return Ok(SectionWhen::Ends {
+                        in_seconds: (end - now).max(0.0),
+                        length: end - start,
+                    });
+                }
+                r.names()
+            } else {
+                Vec::new()
+            }
+        };
+        let played = self
+            .played
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // Played only: the latest that has ended.
+        let Some(p) = played
+            .iter()
+            .rev()
+            .find(|p| p.name == name && (!played_only || p.end.is_some()))
+        else {
+            let mut known: Vec<String> = played.iter().map(|p| p.name.clone()).collect();
+            known.extend(names);
+            known.dedup();
+            let mut seen = std::collections::HashSet::new();
+            known.retain(|n| seen.insert(n.clone()));
+            return Err(if known.is_empty() {
+                format!("no section called {name:?}: no sections have played")
+            } else {
+                format!(
+                    "no section called {name:?} has played or is to come; the sections: {}",
+                    known.join(", ")
+                )
+            });
+        };
+        let Some((end, end_frame)) = p.end else {
+            // Open, yet not in the list running: it is still playing.
+            return Ok(SectionWhen::Ends {
+                in_seconds: 0.0,
+                length: now - p.start,
+            });
+        };
+        let heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
+        let kept_frames = heard.samples.len() as u64 / 2;
+        let first = heard.end_frame.saturating_sub(kept_frames);
+        if end_frame > heard.end_frame {
+            // Not all of it has come back from the engine yet.
+            return Ok(SectionWhen::Ends {
+                in_seconds: (end_frame - heard.end_frame) as f64 / self.engine.sample_rate() as f64,
+                length: end - p.start,
+            });
+        }
+        let from = p.start_frame.max(first);
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        if end_frame > from {
+            let skip = (from - first) as usize * 2;
+            let take = (end_frame - from) as usize * 2;
+            for (i, s) in heard.samples.iter().skip(skip).take(take).enumerate() {
+                if i % 2 == 0 {
+                    left.push(*s);
+                } else {
+                    right.push(*s);
+                }
+            }
+        }
+        let sr = self.engine.sample_rate() as f64;
+        Ok(SectionWhen::Played {
+            kept: left.len() as f64 / sr,
+            left,
+            right,
+            length: end - p.start,
+            ended_ago: (now - end).max(0.0),
+        })
     }
 
     /// What the cue list is doing, if one runs.
@@ -1519,16 +1684,25 @@ impl Conductor {
 
     /// Run whatever the cue list has due.
     fn feed_cues(&self, now: f64) {
-        let runs = {
+        let (runs, begun, ended) = {
             let mut cues = self.cues();
             let Some(r) = cues.as_mut() else { return };
             let tempo = self.tempo();
             let runs = r.due(now, &tempo);
+            let begun = r.take_begun(&tempo);
+            let mut ended = None;
             if r.finished(now, &tempo) {
+                ended = r.end_time(&tempo);
                 *cues = None;
             }
-            runs
+            (runs, begun, ended)
         };
+        for (name, at) in begun {
+            self.log_section(Some(name), at);
+        }
+        if let Some(at) = ended {
+            self.log_section(None, at);
+        }
         for (run, on, what) in runs {
             if let Err(e) = run(self, now, on) {
                 if let Some(r) = self.cues().as_mut() {
@@ -1817,10 +1991,10 @@ impl Conductor {
     pub fn recent_output(&self, seconds: f64) -> (Vec<f32>, Vec<f32>) {
         let heard = self.heard.lock().unwrap_or_else(|e| e.into_inner());
         let want = (seconds.max(0.0) * self.engine.sample_rate() as f64) as usize * 2;
-        let skip = heard.len().saturating_sub(want);
+        let skip = heard.samples.len().saturating_sub(want);
         let skip = skip - skip % 2;
         let (mut l, mut r) = (Vec::new(), Vec::new());
-        for (i, s) in heard.iter().skip(skip).enumerate() {
+        for (i, s) in heard.samples.iter().skip(skip).enumerate() {
             if i % 2 == 0 {
                 l.push(*s);
             } else {

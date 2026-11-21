@@ -129,6 +129,8 @@ pub(crate) struct Running {
     /// When each section of this lap began or is set to begin (the rest
     /// follow from the one before).
     starts: Vec<Option<Point>>,
+    /// Sections begun since the conductor last asked, for its log.
+    begun: Vec<(usize, Point)>,
     errors: VecDeque<String>,
 }
 
@@ -190,6 +192,7 @@ impl Running {
             upcoming: None,
             ends: None,
             starts: vec![None; n],
+            begun: Vec::new(),
             errors: VecDeque::new(),
         };
         r.queue_section(0, start, tempo);
@@ -269,6 +272,7 @@ impl Running {
             self.starts.iter_mut().for_each(|s| *s = None);
         }
         self.starts[k] = Some(at);
+        self.begun.push((k, at));
         self.current = Some((k, at));
         let end = at.plus(self.list.sections[k].length, tempo);
         let n = self.list.sections.len();
@@ -287,6 +291,48 @@ impl Running {
             self.errors.pop_front();
         }
         self.errors.push_back(error);
+    }
+
+    /// The sections begun since the last call: their names and when.
+    pub(crate) fn take_begun(&mut self, tempo: &TempoMap) -> Vec<(String, f64)> {
+        self.begun
+            .drain(..)
+            .map(|(k, at)| (self.list.sections[k].name.clone(), at.time(tempo)))
+            .collect()
+    }
+
+    /// When the last section ends, if the list does not loop and it has
+    /// begun.
+    pub(crate) fn end_time(&self, tempo: &TempoMap) -> Option<f64> {
+        self.ends.map(|e| e.time(tempo))
+    }
+
+    /// When the section called `name` plays: the one playing now if it is
+    /// that one, else the next to come (within a lap). Start and end.
+    pub(crate) fn next_occurrence(&self, name: &str, tempo: &TempoMap) -> Option<(f64, f64)> {
+        let n = self.list.sections.len();
+        let (mut k, mut at) = self.current.or(self.upcoming)?;
+        for _ in 0..=n {
+            let s = &self.list.sections[k];
+            let end = at.plus(s.length, tempo);
+            if s.name == name {
+                return Some((at.time(tempo), end.time(tempo)));
+            }
+            k += 1;
+            if k == n {
+                if !self.list.looping {
+                    return None;
+                }
+                k = 0;
+            }
+            at = end;
+        }
+        None
+    }
+
+    /// The names of the sections, in order.
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.list.sections.iter().map(|s| s.name.clone()).collect()
     }
 
     /// True once the last section (of a list that does not loop) has ended.

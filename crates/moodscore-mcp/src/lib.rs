@@ -89,7 +89,8 @@ over_bars for moves and fades that last a section; downbeat: true counts \
 bars from 1 where the first begins. The report lists the bar each section \
 begins on. To change what's coming, call `sections` again with the \
 sections still to come (at_bar); what is sounding plays on. Watch get_state \
-sections for the section and bar now.
+sections for the section and bar now; to hear how a section came out, listen \
+with its name (it waits for the section to end).
 - If the person sets a general pace (\"everything slow today\", \"short and \
 direct\"), call `set_pace` once instead of repeating `over` and `curve` on every \
 call. Give `over` or `curve` explicitly only when a single move should differ \
@@ -382,8 +383,10 @@ pub struct AuditionArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListenArgs {
-    /// Seconds of the live output to measure, 1 to 30. Default 5.
+    /// Seconds of the live output to measure, 1 to 60. Default 5.
     pub seconds: Option<f64>,
+    /// Measure a section of the sections instead, by name: the latest time it played, from its first downbeat to the next section's. If it is playing or about to (ending within 45 s), listen waits for it to end, then measures it.
+    pub section: Option<String>,
     /// [low, high] Hz to look for a pitch in. Default [30, 2000].
     pub pitch_range: Option<(f32, f32)>,
     /// Compare with a target.
@@ -787,9 +790,26 @@ impl MoodscoreServer {
     }
 
     #[tool(
-        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something."
+        description = "Measure the last seconds of the live output: the whole mix as it sounds now. Reports level, brightness, tilt, the pitch heard (held notes, glides, wobble), stereo width and balance per band, and how brightness and level moved over the stretch, plus a summary in words. Use it to check the mix (is it too dark, too narrow, leaning to one side, is a part buried) after changing something. With section, it measures exactly one section of the sections (the latest time it played, up to 60 s of it), waiting for it to end if it is playing or about to: no sleeping or counting seconds."
     )]
     fn listen(&self, Parameters(args): Parameters<ListenArgs>) -> Result<String, String> {
+        if let Some(name) = args.section.as_deref() {
+            if args.seconds.is_some() {
+                return Err("give section or seconds, not both".into());
+            }
+            let target = args
+                .target
+                .as_deref()
+                .map(moodscore_ear::Target::find)
+                .transpose()?;
+            let (report, heard) =
+                ears::listen_section(&self.conductor, name, args.pitch_range, target.as_ref())?;
+            let mut v = moodscore_ear::to_json(&report);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("heard".into(), heard);
+            }
+            return Ok(serde_json::to_string_pretty(&v).unwrap_or_default());
+        }
         let seconds = args.seconds.unwrap_or(5.0);
         if !(1.0..=moodscore_director::HEARD_SECONDS as f64).contains(&seconds) {
             return Err(format!(

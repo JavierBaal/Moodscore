@@ -337,7 +337,9 @@ Claude's ears for its own sounds: render a note part's current sound playing a p
 
 ### `listen` ✅
 
-The same measurements on the last `seconds` (1–30, default 5) of the live output: the whole mix as it sounds. Without notes to go by, the pitch heard is tracked instead (`pitch`: held notes, glides, wobble, the longest note's harmonics; `pitch_range` sets where to look). `target` compares.
+The same measurements on the last `seconds` (1–60, default 5) of the live output: the whole mix as it sounds. Without notes to go by, the pitch heard is tracked instead (`pitch`: held notes, glides, wobble, the longest note's harmonics; `pitch_range` sets where to look). `target` compares.
+
+Or **`section`**: one section of the `sections`, by name, from its first downbeat to the next section's, the latest time it played. If it is playing or still to come and ends within 45 s, `listen` waits for it to end and then measures it, so checking a section is one call, with no sleeping or counting seconds. `heard` says the section, the seconds measured and how long it waited; the last 60 s of output are kept, so of a longer section only its end is measured (`heard.note` says so).
 
 ### `analyze_file` ✅
 
