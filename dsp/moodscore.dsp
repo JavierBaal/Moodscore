@@ -8,7 +8,8 @@
 // The voices are summed, run through a stereo Moog-style ladder low-pass and
 // a stereo reverb. The room can be moved near or far: its size, how dark its
 // tail is, the gap before it answers (predelay), how loud it answers (wet),
-// how loud the direct sound is and how much of its top the air takes away.
+// how loud the direct sound is, how much of its top the air takes away and
+// how much of its body the distance thins out.
 //
 // The note voices (the synth in moodscore-synth) arrive as four inputs: their
 // dry sound (left, right) and what they send to the reverb (left, right).
@@ -69,6 +70,7 @@ predelay  = hslider("space/predelay [unit:ms]", 0, 0, 80, 0.01) : si.smoo;
 direct    = hslider("space/direct", 1, 0, 1, 0.001) : from_default(1);
 wet_gain  = hslider("space/wet", 1, 0, 1.5, 0.001) : from_default(1);
 air       = hslider("space/air", 0, 0, 1, 0.001) : si.smoo;
+thin      = hslider("space/thin", 0, 0, 1, 0.001) : si.smoo;
 
 master    = hslider("master/gain", 0.5, 0, 1, 0.001) : si.smoo;
 
@@ -127,7 +129,13 @@ wet = (pre, pre) : re.zita_rev1_stereo(0, 200, damping, size * 0.75, size, 48000
 // to a darkening around 2 kHz (air 1).
 air_pole = air * exp(-2 * ma.PI * 3000 / ma.SR);
 absorb = fi.pole(air_pole) : *(1 - air_pole) : fi.pole(air_pole) : *(1 - air_pole);
-near = absorb : *(direct);
+// A far sound loses its body: the lows below about 200 Hz taken out of what
+// reaches the listener and of what reaches the room (so a vast room does not
+// ring on with the sub alone). x - thin * lowpass(x): at 0 an exact
+// pass-through, at 1 a gentle high-pass.
+body = fi.lowpass(2, 200);
+thinned = _ <: (_, (body : *(thin))) : -;
+near = absorb : thinned : *(direct);
 
 // Drones (dl, dr) keep their dry/wet balance; notes add their dry sound and
 // their send. The reverb is linear, so the drones sound exactly as before.
@@ -135,7 +143,7 @@ near = absorb : *(direct);
 // goes through the air and the direct level.
 room(dl, dr, nl, nr, sl, sr) =
     ((dl * (1 - rev_mix) + nl : near), (dr * (1 - rev_mix) + nr : near)),
-    ((dl * rev_mix + sl, dr * rev_mix + sr) : wet)
+    (((dl * rev_mix + sl) : thinned), ((dr * rev_mix + sr) : thinned) : wet)
     :> _, _;
 
 // -------------------------------------------------------------- mono bass

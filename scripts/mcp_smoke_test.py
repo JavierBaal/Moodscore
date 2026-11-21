@@ -419,13 +419,13 @@ st = json.loads(call("get_state", {})[1])
 p = {x["path"]: x for x in st["params"]}
 names = {m["name"] for m in st["macros"]}
 check(not err and {"density", "distance"} <= names and p["drone_6/level"]["target"] > 0.2
-      and p["space/direct"]["target"] < 0.5 and p["space/size"]["target"] > 15,
+      and p["space/direct"]["target"] < 0.5 and p["space/size"]["target"] > 15 and p["space/thin"]["target"] > 0.9,
       f"density fills the drone, distance moves the room ({p['drone_6/level']['target']}, {p['space/direct']['target']})")
 err, text = call("morph", {"density": 0.15, "distance": 0.4, "over": 0.2})
 time.sleep(0.4)
 st = json.loads(call("get_state", {})[1])
 p = {x["path"]: x for x in st["params"]}
-check(p["drone_6/level"]["target"] == 0 and p["space/direct"]["target"] == 1 and p["space/predelay"]["target"] == 0,
+check(p["drone_6/level"]["target"] == 0 and p["space/direct"]["target"] == 1 and p["space/predelay"]["target"] == 0 and p["space/thin"]["target"] == 0,
       "their defaults are the resting sound")
 err, text = call("morph", {"density": 1.5})
 check(err and "density" in text, "density out of range explained")

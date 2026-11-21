@@ -83,7 +83,7 @@ Pulse (cinematic rhythm, not a drum machine):
 
 More macros, from the same live tests (each section needed many single gestures):
 - [x] `density`: how many voices sound, 0..1, bringing voices in and out in a musical order (low to high, each over its own stretch)
-- [x] `distance`: near and dry to far and washed (the shared room: size, damping, predelay, wet, and the direct sound's level and air), notes included
+- [x] `distance`: near and dry to far and washed (the shared room: size, damping, predelay, wet, and the direct sound's level, air and thinning), notes included
 
 Session:
 - [x] Chained sections: a cue list (harmony, tempo, macros, voices, sounds, sequences, phrases and fades, each with when it enters, in bars or seconds) that the engine runs on its own. In the live tests of 19 Nov the agent chained sections by sleeping in a shell between calls: fragile (if the conversation stops, the piece freezes in its current section; Claude Desktop has no shell) and it nearly lost a section to an already-scheduled release. Now one `sections` call, validated whole, with tempo changes and harmonic plans that wait for their beat and `over_bars` for moves that last a section.

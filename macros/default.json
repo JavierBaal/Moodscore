@@ -32,7 +32,7 @@
       ]
     },
     "distance": {
-      "description": "How far away everything sounds, drones and notes alike. 0 = near and dry: a small room that answers after a short gap, the direct sound clear. 1 = far and washed: a vast dark room, the direct sound faint and dulled by the air. The default is the room as it always was.",
+      "description": "How far away everything sounds, drones and notes alike. 0 = near and dry: a small room that answers after a short gap, the direct sound clear. 1 = far and washed: a vast dark room, the direct sound faint, dulled by the air and thin (its lows taken out, so a far ending does not leave the low end ringing alone). The default is the room as it always was.",
       "default": 0.4,
       "targets": [
         { "param": "space/size", "from": 3, "to": 15.5 },
@@ -41,6 +41,7 @@
         { "param": "space/wet", "from": 0.5, "to": 1, "span": [0.0, 0.4] },
         { "param": "space/direct", "from": 1, "to": 0.4, "span": [0.4, 1.0] },
         { "param": "space/air", "from": 0, "to": 1, "span": [0.4, 1.0] },
+        { "param": "space/thin", "from": 0, "to": 1, "span": [0.4, 1.0] },
         { "param": "space/reverb_mix", "from": -0.2, "to": 0.3, "mode": "add" }
       ]
     }

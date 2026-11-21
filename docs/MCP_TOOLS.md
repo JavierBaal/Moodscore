@@ -264,7 +264,7 @@ Macros: `darkness` ✅, `instability` ✅, `density` ✅, `distance` ✅; `tensi
 | `darkness` | open and airy | closed, low and murky | 0.4 | filter cutoff and resonance, sub, reverb |
 | `instability` | steady and pure | wavering, beating, seasick | 0.3 | pitch drift and detune of every drone voice |
 | `density` | the root alone | all six voices | 0.15 (root and a quiet fifth, the drone at rest) | `drone_2` … `drone_6` levels, each over its own stretch of the macro (low to high: 2 by 0.15, 3 by 0.35, 4 by 0.55, 5 by 0.75, 6 by 0.95), and a slight trim of the master as it fills |
-| `distance` | near and dry | far and washed | 0.4 (the room as it always was) | the room: `space/size` (3 to 15.5 s), `space/damping` (9 to 3.3 kHz), `space/predelay` (35 ms near, none from 0.4), `space/wet` (half near), `space/direct` (down to 0.4 far) and `space/air` (the highs of the direct sound, far), and adds to `space/reverb_mix` |
+| `distance` | near and dry | far and washed | 0.4 (the room as it always was) | the room: `space/size` (3 to 15.5 s), `space/damping` (9 to 3.3 kHz), `space/predelay` (35 ms near, none from 0.4), `space/wet` (half near), `space/direct` (down to 0.4 far), `space/air` (the highs of the direct sound, far) and `space/thin` (the lows, far, out of the direct sound and the room's input), and adds to `space/reverb_mix`. For an ending that recedes, move it up first and release once it is there |
 
 Omitted macros keep moving (or stay) as they were. At their defaults `density` and `distance` leave the sound exactly as it was before they existed. `distance` acts on the shared room, so the note parts move with the drones without any of their own parameters changing (their `part/reverb_send` stays theirs). A drone level set by hand with `gesture` leaves `density`'s hands like any hand-set parameter.
 
@@ -302,7 +302,7 @@ Move a single raw parameter along a trajectory. For when a macro is too coarse. 
 
 Six drone voices, `drone_1` … `drone_6`, each with `pitch` (Hz), `level`, `detune` (cents) and `drift`; `drone_1` also has `sub`. At rest `drone_1` (A1) and a quiet `drone_2` (E2) sound; `drone_3` … `drone_6` wait at level 0 on A2, C3, E3, A3 (an open A minor chord). Bring voices in and out with the `density` macro; for one particular voice, `gesture` on `drone_N/level` (it then leaves `density`'s hands); retune with `drone_N/pitch` (or let `harmony` do it).
 
-The room (shared by drones and notes): `space/reverb_mix` (the drones' share of reverb), `space/size` (tail, s), `space/damping` (Hz above which the tail darkens), `space/predelay` (ms before the room answers), `space/wet` (how loud it answers), `space/direct` (the direct sound of everything) and `space/air` (how much of its top the air takes, 0 none). `distance` drives them all.
+The room (shared by drones and notes): `space/reverb_mix` (the drones' share of reverb), `space/size` (tail, s), `space/damping` (Hz above which the tail darkens), `space/predelay` (ms before the room answers), `space/wet` (how loud it answers), `space/direct` (the direct sound of everything) `space/air` (how much of its top the air takes, 0 none) and `space/thin` (how much of its body the distance takes: the lows below about 200 Hz out of the direct sound and out of what reaches the room, 0 none). `distance` drives them all.
 
 ### `voice`
 

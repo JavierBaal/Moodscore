@@ -55,8 +55,11 @@ coming in low to high), one morph instead of a gesture per voice. Use \
 density's hands), and drone_N/pitch (Hz) to retune it.
 - `distance` moves the whole scene near or far, notes included: 0 near and \
 dry (a small room, the direct sound clear), 0.4 the room at rest, 1 far and \
-washed (a vast dark room, the direct sound faint and dulled). Far is also \
-quieter, as it should be.
+washed (a vast dark room, the direct sound faint, dulled and thin). Far is \
+also quieter, as it should be. For an ending that recedes, move distance up \
+first and release once it has got there (in sections, the release a section \
+after the distance, or after_bars into it): fading while it is still \
+receding sinks the ending instead of carrying it away.
 - `harmony` makes the voices play chords: give a key, a mode and a \
 progression of Roman-numeral chords with durations, and the engine walks it \
 on its own, looping, each voice gliding to the nearest note of the next chord. \
@@ -150,7 +153,7 @@ pub struct MorphArgs {
     pub instability: Option<f32>,
     /// Density, 0.0 to 1.0: how many drone voices sound. 0 is the root alone, 0.15 the drone at rest (root and fifth), 1 all six; they come in one after another, low to high.
     pub density: Option<f32>,
-    /// Distance, 0.0 to 1.0: how far away everything sounds, notes included. 0 is near and dry (a small room, the direct sound clear), 0.4 the room at rest, 1 far and washed (a vast dark room, the direct sound faint and dulled).
+    /// Distance, 0.0 to 1.0: how far away everything sounds, notes included. 0 is near and dry (a small room, the direct sound clear), 0.4 the room at rest, 1 far and washed (a vast dark room, the direct sound faint, dulled and thin).
     pub distance: Option<f32>,
     /// Seconds to get there. 0 means as fast as is musically safe. Default: the current pace.
     pub over: Option<f32>,

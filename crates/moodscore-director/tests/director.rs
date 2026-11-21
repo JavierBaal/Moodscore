@@ -906,6 +906,7 @@ fn at_their_defaults_density_and_distance_leave_the_drone_as_it_was() {
         ("space/direct", 1.0),
         ("space/wet", 1.0),
         ("space/air", 0.0),
+        ("space/thin", 0.0),
     ] {
         assert!(
             (value(&d, path) - v).abs() < 1e-4,
@@ -966,6 +967,10 @@ fn distance_moves_the_room() {
     assert!(at(1.0, "space/damping") < 3500.0);
     assert!(at(1.0, "space/direct") < 0.5);
     assert!(at(1.0, "space/air") > 0.99);
+    // And thin: its lows taken out, from the default distance on.
+    assert!(at(1.0, "space/thin") > 0.99);
+    assert_eq!(at(0.4, "space/thin"), 0.0);
+    assert_eq!(at(0.0, "space/thin"), 0.0);
     // It adds to the drones' reverb on top of darkness.
     assert!(at(1.0, "space/reverb_mix") > at(0.4, "space/reverb_mix") + 0.15);
 }
