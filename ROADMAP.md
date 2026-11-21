@@ -34,6 +34,7 @@ The milestone that decides whether the idea works:
 5. ✅ Chained sections: a cue list the engine runs on its own (`sections`), checked whole before anything sounds, every action on its beat.
 6. ✅ `density` and `distance` macros (data-driven, with a `span` per target; the room gained size, damping, predelay, wet, direct and air).
 7. ✅ Fixes from the first live test (21 Nov): four note parts (resting parts cost nothing); altered numerals counted from the major scale (`bVII` is the same note in every mode); a sequence auditioned at its own tempo and over its own chords; each section's bar in the reports and `downbeat` to count from 1; `listen` to one section by name; `space/thin`, so a far ending no longer leaves the low end ringing alone; the tuned presets centred inside their targets.
+8. ✅ Fixes from the second live test (21 Nov, the diver scene): the drones make room for the notes (`space/notes_room`), parts up to +9 dB, and `listen` says who is heard (each layer against the rest in its band); motifs play inversions (on a chord with a bass note, 1 is the bass); `wait` (until a bar, or a section begins or ends) and `listen` waiting in steps, so no sleeping; a release stops the phrases and sequences that were playing once it is silent.
 
 Then `tension`, the pulse voice and `urgency`, scenes, `voice`, `hold`, `panic`.
 
