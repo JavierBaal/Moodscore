@@ -29,6 +29,7 @@ All code, comments, docs, commit messages and issues are in English.
 - `cargo run --release -- render out.wav 30` (offline, same director/engine path as live)
 - `cargo run --release -- play` (live demo through the speakers)
 - `python3 scripts/mcp_smoke_test.py target/release/moodscore` (MCP end to end, headless)
+- `cargo run --release -- serve --no-audio --record out.wav` (a headless MCP server that writes what it plays to a WAV: drive it with an MCP client to hear a session)
 - After editing `dsp/`: rebuild with `MOODSCORE_UPDATE_GENERATED=1` and commit `crates/moodscore-dsp/generated/moodscore_dsp.rs` (needs Faust ≥ 2.88; see CONTRIBUTING.md).
 
 ## Conventions

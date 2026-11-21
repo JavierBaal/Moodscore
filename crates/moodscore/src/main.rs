@@ -1,7 +1,8 @@
 //! Moodscore command-line entry point.
 //!
 //! ```text
-//! moodscore serve [--macros FILE] [--no-audio]    MCP server over stdio, playing live
+//! moodscore serve [--macros FILE] [--no-audio [--record FILE.wav]]
+//!                                                   MCP server over stdio, playing live
 //! moodscore play [SECONDS] [--macros FILE]        live demo without MCP (check your audio)
 //! moodscore render OUT.wav [SECONDS] [--macros FILE]  offline demo to a WAV file
 //! moodscore params                                list the DSP parameters
@@ -20,7 +21,10 @@ use moodscore_engine::ParamInfo;
 
 const USAGE: &str = "\
 usage:
-  moodscore serve [--macros FILE] [--no-audio]        MCP server over stdio, playing live
+  moodscore serve [--macros FILE] [--no-audio [--record FILE.wav]]
+                                                      MCP server over stdio, playing live
+                                                      (--record writes what a headless
+                                                      server plays to a WAV file)
   moodscore play [SECONDS] [--macros FILE]            live demo without MCP (default 40 s)
   moodscore render OUT.wav [SECONDS] [--macros FILE]  offline demo to a WAV file (default 30 s)
   moodscore params                                    list the DSP parameters
@@ -38,9 +42,13 @@ fn main() -> ExitCode {
         Err(e) => return fail(e),
     };
     let no_audio = take_flag(&mut args, "--no-audio");
+    let record = match take_option(&mut args, "--record") {
+        Ok(v) => v,
+        Err(e) => return fail(e),
+    };
 
     let result = match args.first().map(String::as_str) {
-        Some("serve") => serve(macros_file.as_deref(), no_audio),
+        Some("serve") => serve(macros_file.as_deref(), no_audio, record.as_deref()),
         Some("play") => {
             seconds_arg(args.get(1), 40.0).and_then(|s| play(s, macros_file.as_deref()))
         }
@@ -197,11 +205,23 @@ fn start_live(
 }
 
 /// Run the engine in real time without an audio device (testing, CI).
-fn start_headless(macros_file: Option<&str>) -> Result<Conductor> {
+fn start_headless(macros_file: Option<&str>, record: Option<&str>) -> Result<Conductor> {
     let (engine, mut renderer) = moodscore_engine::new(OFFLINE_SAMPLE_RATE);
     engine.fade_to(0.0, 0.0); // silent until `start`, like live `serve`
     let macros = load_macros(macros_file, engine.params())?;
     let conductor = Conductor::start(Director::new(engine.params().to_vec(), macros), engine);
+    let mut writer = match record {
+        Some(path) => Some(hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: OFFLINE_SAMPLE_RATE,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )?),
+        None => None,
+    };
     thread::Builder::new()
         .name("moodscore-headless-audio".into())
         .spawn(move || {
@@ -212,6 +232,17 @@ fn start_headless(macros_file: Option<&str>) -> Result<Conductor> {
             loop {
                 renderer.render(&mut l, &mut r);
                 rendered += block as u64;
+                if let Some(w) = &mut writer {
+                    for (a, b) in l.iter().zip(&r) {
+                        let _ = w.write_sample(*a);
+                        let _ = w.write_sample(*b);
+                    }
+                    // Keep the file whole every second: the process may end
+                    // any time.
+                    if rendered.is_multiple_of(OFFLINE_SAMPLE_RATE as u64) {
+                        let _ = w.flush();
+                    }
+                }
                 let due = Duration::from_secs_f64(rendered as f64 / OFFLINE_SAMPLE_RATE as f64);
                 if let Some(wait) = due.checked_sub(start.elapsed()) {
                     thread::sleep(wait);
@@ -222,9 +253,12 @@ fn start_headless(macros_file: Option<&str>) -> Result<Conductor> {
     Ok(conductor)
 }
 
-fn serve(macros_file: Option<&str>, no_audio: bool) -> Result<()> {
+fn serve(macros_file: Option<&str>, no_audio: bool, record: Option<&str>) -> Result<()> {
+    if record.is_some() && !no_audio {
+        return Err("--record works with --no-audio".into());
+    }
     let (conductor, _output) = if no_audio {
-        (start_headless(macros_file)?, None)
+        (start_headless(macros_file, record)?, None)
     } else {
         let (c, o) = start_live(macros_file, true)?;
         (c, Some(o))
